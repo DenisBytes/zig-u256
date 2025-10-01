@@ -1,0 +1,9 @@
+# Zig build artifacts
+zig-cache/
+zig-out/
+.zig-cache/
+
+# Ignore all markdown files except README.MD
+*.md
+*.MD
+!README.MD
