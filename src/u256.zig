@@ -37,18 +37,16 @@ pub const U256 = struct {
     }
 
     /// Interprets buf as the bytes of a big-endian unsigned integer,
-    /// sets z to that value, and returns self.
+    /// sets self to that value, and returns self.
     /// If buf is larger than 32 bytes, only the last 32 bytes are used.
     pub fn setBytes(self: *U256, buf: []const u8) *U256 {
-        const len = buf.len;
-
-        if (len == 0) {
+        if (buf.len == 0) {
             return self.clear();
         }
 
         // If larger than 32 bytes, use only the last 32 bytes
-        const effective_buf = if (len > 32) buf[len - 32 ..] else buf;
-        const effective_len = @min(len, 32);
+        const effective_buf = if (buf.len > 32) buf[buf.len - 32 ..] else buf;
+        const effective_len = @min(buf.len, 32);
 
         switch (effective_len) {
             1 => self.setBytes1(effective_buf),
@@ -89,7 +87,55 @@ pub const U256 = struct {
         return self;
     }
 
+    /// bytes32 returns the value of self as a 32-byte big-endian array.
+    pub fn bytes32(self: U256) [32]u8 {
+        var b: [32]u8 = undefined;
+
+        mem.writeInt(u64, b[0..8], self.limbs[3], .big);
+        mem.writeInt(u64, b[8..16], self.limbs[2], .big);
+        mem.writeInt(u64, b[16..24], self.limbs[1], .big);
+        mem.writeInt(u64, b[24..32], self.limbs[0], .big);
+
+        return b;
+    }
+
+    /// Writes the minimal big-endian representation into buf.
+    /// Returns the number of bytes written.
+    /// Returns 0 if buf length is smaller than self length.
+    pub fn writeBytes(self: U256, buf: []u8) usize {
+        const len = self.byteLen();
+        // slice length in zig is the capacity (vs GO).
+        if (buf.len < len) return 0;
+
+        const full = self.bytes32();
+        @memcpy(buf[0..len], full[32 - len ..]);
+        return len;
+    }
+
+    /// Returns the number of bits required to represent self.
+    pub fn bitLen(self: U256) usize {
+        if (self.limbs[3] != 0) {
+            return @as(usize, 192) + @as(usize, 64 - @clz(self.limbs[3]));
+        }
+        if (self.limbs[2] != 0) {
+            return @as(usize, 128) + @as(usize, 64 - @clz(self.limbs[2]));
+        }
+        if (self.limbs[1] != 0) {
+            return @as(usize, 64) + @as(usize, 64 - @clz(self.limbs[1]));
+        }
+        if (self.limbs[0] == 0) {
+            return 0;
+        }
+        return @as(usize, 64 - @clz(self.limbs[0]));
+    }
+
+    /// Returns the number of bytes required to represent self.
+    pub fn byteLen(self: U256) usize {
+        return (self.bitLen() + 7) / 8;
+    }
+
     // setBytes functions for each length (1-32 bytes)
+
     fn setBytes1(self: *U256, buf: []const u8) void {
         assert(buf.len == 1);
         self.limbs[0] = buf[0];
@@ -416,15 +462,133 @@ test "U256 setBytes - 32 bytes" {
 test "U256 setBytes - larger than 32 bytes" {
     var z = U256.initZero();
     const bytes = [_]u8{
-        0xFF, 0xFF, 0xFF, 0xFF, 
-        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-        0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10,
-        0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
-        0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20,
+        0xFF, 0xFF, 0xFF, 0xFF,
+        0x01, 0x02, 0x03, 0x04,
+        0x05, 0x06, 0x07, 0x08,
+        0x09, 0x0A, 0x0B, 0x0C,
+        0x0D, 0x0E, 0x0F, 0x10,
+        0x11, 0x12, 0x13, 0x14,
+        0x15, 0x16, 0x17, 0x18,
+        0x19, 0x1A, 0x1B, 0x1C,
+        0x1D, 0x1E, 0x1F, 0x20,
     };
     _ = z.setBytes(&bytes);
     try std.testing.expectEqual(@as(u64, 0x191A1B1C1D1E1F20), z.limbs[0]);
     try std.testing.expectEqual(@as(u64, 0x1112131415161718), z.limbs[1]);
     try std.testing.expectEqual(@as(u64, 0x090A0B0C0D0E0F10), z.limbs[2]);
     try std.testing.expectEqual(@as(u64, 0x0102030405060708), z.limbs[3]);
+}
+
+test "U256 bitLen - zero" {
+    const z = U256.initZero();
+    try std.testing.expectEqual(@as(usize, 0), z.bitLen());
+}
+
+test "U256 bitLen - single bit" {
+    const z = U256.init(1);
+    try std.testing.expectEqual(@as(usize, 1), z.bitLen());
+}
+
+test "U256 bitLen - 8 bits" {
+    const z = U256.init(0xFF);
+    try std.testing.expectEqual(@as(usize, 8), z.bitLen());
+}
+
+test "U256 bitLen - 64 bits" {
+    const z = U256.init(0xFFFFFFFFFFFFFFFF);
+    try std.testing.expectEqual(@as(usize, 64), z.bitLen());
+}
+
+test "U256 bitLen - spanning limbs" {
+    var z = U256.initZero();
+    z.limbs[1] = 0xFF;
+    try std.testing.expectEqual(@as(usize, 64 + 8), z.bitLen());
+}
+
+test "U256 bitLen - max value" {
+    var z = U256.initZero();
+    z.limbs[3] = 0xFFFFFFFFFFFFFFFF;
+    z.limbs[2] = 0xFFFFFFFFFFFFFFFF;
+    z.limbs[1] = 0xFFFFFFFFFFFFFFFF;
+    z.limbs[0] = 0xFFFFFFFFFFFFFFFF;
+    try std.testing.expectEqual(@as(usize, 256), z.bitLen());
+}
+
+test "U256 byteLen - zero" {
+    const z = U256.initZero();
+    try std.testing.expectEqual(@as(usize, 0), z.byteLen());
+}
+
+test "U256 byteLen - single byte" {
+    const z = U256.init(0xFF);
+    try std.testing.expectEqual(@as(usize, 1), z.byteLen());
+}
+
+test "U256 byteLen - two bytes" {
+    const z = U256.init(0x0100);
+    try std.testing.expectEqual(@as(usize, 2), z.byteLen());
+}
+
+test "U256 byteLen - 32 bytes" {
+    var z = U256.initZero();
+    z.limbs[3] = 0x0100000000000000;
+    try std.testing.expectEqual(@as(usize, 32), z.byteLen());
+}
+
+test "U256 bytes32 - round trip" {
+    const original = [_]u8{
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+        0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10,
+        0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
+        0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20,
+    };
+    var z = U256.initZero();
+    _ = z.setBytes(&original);
+    const result = z.bytes32();
+    try std.testing.expectEqualSlices(u8, &original, &result);
+}
+
+test "U256 bytes32 - small value" {
+    const z = U256.init(0x42);
+    const result = z.bytes32();
+    try std.testing.expectEqual(@as(u8, 0), result[0]);
+    try std.testing.expectEqual(@as(u8, 0x42), result[31]);
+}
+
+test "U256 writeBytes - sufficient buffer" {
+    const z = U256.init(0x1234);
+    var buf: [32]u8 = undefined;
+    const written = z.writeBytes(&buf);
+    try std.testing.expectEqual(@as(usize, 2), written);
+    try std.testing.expectEqual(@as(u8, 0x12), buf[0]);
+    try std.testing.expectEqual(@as(u8, 0x34), buf[1]);
+}
+
+test "U256 writeBytes - insufficient buffer" {
+    const z = U256.init(0x123456);
+    var buf: [2]u8 = undefined;
+    const written = z.writeBytes(&buf);
+    try std.testing.expectEqual(@as(usize, 0), written);
+}
+
+test "U256 writeBytes - zero value" {
+    const z = U256.initZero();
+    var buf: [1]u8 = undefined;
+    const written = z.writeBytes(&buf);
+    try std.testing.expectEqual(@as(usize, 0), written);
+}
+
+test "U256 writeBytes - full 32 bytes" {
+    var z = U256.initZero();
+    _ = z.setBytes(&[_]u8{
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+        0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10,
+        0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
+        0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20,
+    });
+    var buf: [32]u8 = undefined;
+    const written = z.writeBytes(&buf);
+    try std.testing.expectEqual(@as(usize, 32), written);
+    try std.testing.expectEqual(@as(u8, 0x01), buf[0]);
+    try std.testing.expectEqual(@as(u8, 0x20), buf[31]);
 }
