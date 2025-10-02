@@ -149,6 +149,11 @@ pub const U256 = struct {
         }
     }
 
+    /// Returns the lower 64 bits of self.
+    pub fn toU64(self: U256) u64 {
+        return self.limbs[0];
+    }
+
     // setBytes functions for each length (1-32 bytes)
 
     fn setBytes1(self: *U256, buf: []const u8) void {
@@ -651,4 +656,28 @@ test "U256 writeBytesToEnd - empty buffer" {
     const z = U256.init(0x1234);
     var buf: [0]u8 = undefined;
     z.writeBytesToEnd(&buf); // Should not crash
+}
+
+test "U256 toU64 - zero" {
+    const z = U256.initZero();
+    try std.testing.expectEqual(@as(u64, 0), z.toU64());
+}
+
+test "U256 toU64 - small value" {
+    const z = U256.init(0x1234567890ABCDEF);
+    try std.testing.expectEqual(@as(u64, 0x1234567890ABCDEF), z.toU64());
+}
+
+test "U256 toU64 - max u64" {
+    const z = U256.init(0xFFFFFFFFFFFFFFFF);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.toU64());
+}
+
+test "U256 toU64 - truncates higher limbs" {
+    var z = U256.initZero();
+    z.limbs[0] = 0x1111111111111111;
+    z.limbs[1] = 0x2222222222222222;
+    z.limbs[2] = 0x3333333333333333;
+    z.limbs[3] = 0x4444444444444444;
+    try std.testing.expectEqual(@as(u64, 0x1111111111111111), z.toU64());
 }
