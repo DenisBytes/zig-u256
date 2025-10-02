@@ -99,19 +99,6 @@ pub const U256 = struct {
         return b;
     }
 
-    /// Writes the minimal big-endian representation into buf.
-    /// Returns the number of bytes written.
-    /// Returns 0 if buf length is smaller than self length.
-    pub fn writeBytes(self: U256, buf: []u8) usize {
-        const len = self.byteLen();
-        // slice length in zig is the capacity (vs GO).
-        if (buf.len < len) return 0;
-
-        const full = self.bytes32();
-        @memcpy(buf[0..len], full[32 - len ..]);
-        return len;
-    }
-
     /// Returns the number of bits required to represent self.
     pub fn bitLen(self: U256) usize {
         if (self.limbs[3] != 0) {
@@ -132,6 +119,34 @@ pub const U256 = struct {
     /// Returns the number of bytes required to represent self.
     pub fn byteLen(self: U256) usize {
         return (self.bitLen() + 7) / 8;
+    }
+
+    /// Writes the minimal big-endian representation to the start of buf.
+    /// Returns the number of bytes written.
+    /// Returns 0 if buf is smaller than the minimal byte length.
+    pub fn writeBytes(self: U256, buf: []u8) usize {
+        const len = self.byteLen();
+        if (buf.len < len) return 0;
+
+        const full = self.bytes32();
+        @memcpy(buf[0..len], full[32 - len ..]);
+        return len;
+    }
+
+    /// Writes bytes to the end of buf (right-padded with the value at the end).
+    /// If buf is larger than 32 bytes, fills the first 32 bytes.
+    /// If buf is smaller than 32 bytes, only writes the least significant bytes.
+    /// Useful for filling fixed-size buffers like Ethereum addresses (20 bytes).
+    pub fn writeBytesToEnd(self: U256, buf: []u8) void {
+        if (buf.len == 0) return;
+
+        const full = self.bytes32();
+        const end: usize = @min(buf.len - 1, 31);
+
+        var i: usize = 0;
+        while (i <= end) : (i += 1) {
+            buf[end - i] = full[31 - i];
+        }
     }
 
     // setBytes functions for each length (1-32 bytes)
@@ -591,4 +606,49 @@ test "U256 writeBytes - full 32 bytes" {
     try std.testing.expectEqual(@as(usize, 32), written);
     try std.testing.expectEqual(@as(u8, 0x01), buf[0]);
     try std.testing.expectEqual(@as(u8, 0x20), buf[31]);
+}
+
+test "U256 writeBytesToEnd - 20 byte buffer (Ethereum address)" {
+    const z = U256.init(0x1234);
+    var buf: [20]u8 = undefined;
+    z.writeBytesToEnd(&buf);
+    // Should fill from the end with least significant bytes
+    try std.testing.expectEqual(@as(u8, 0), buf[0]);
+    try std.testing.expectEqual(@as(u8, 0), buf[17]);
+    try std.testing.expectEqual(@as(u8, 0x12), buf[18]);
+    try std.testing.expectEqual(@as(u8, 0x34), buf[19]);
+}
+
+test "U256 writeBytesToEnd - 32 byte buffer" {
+    var z = U256.initZero();
+    _ = z.setBytes(&[_]u8{
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+        0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10,
+        0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
+        0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20,
+    });
+    var buf: [32]u8 = undefined;
+    z.writeBytesToEnd(&buf);
+    try std.testing.expectEqual(@as(u8, 0x01), buf[0]);
+    try std.testing.expectEqual(@as(u8, 0x20), buf[31]);
+}
+
+test "U256 writeBytesToEnd - 40 byte buffer (larger than 32)" {
+    const z = U256.init(0xABCDEF);
+    var buf: [40]u8 = [_]u8{0xFF} ** 40;
+    z.writeBytesToEnd(&buf);
+    // Should fill only first 32 bytes
+    try std.testing.expectEqual(@as(u8, 0), buf[0]);
+    try std.testing.expectEqual(@as(u8, 0xAB), buf[29]);
+    try std.testing.expectEqual(@as(u8, 0xCD), buf[30]);
+    try std.testing.expectEqual(@as(u8, 0xEF), buf[31]);
+    // Last 8 bytes should remain untouched
+    try std.testing.expectEqual(@as(u8, 0xFF), buf[32]);
+    try std.testing.expectEqual(@as(u8, 0xFF), buf[39]);
+}
+
+test "U256 writeBytesToEnd - empty buffer" {
+    const z = U256.init(0x1234);
+    var buf: [0]u8 = undefined;
+    z.writeBytesToEnd(&buf); // Should not crash
 }

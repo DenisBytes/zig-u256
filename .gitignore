@@ -7,3 +7,6 @@ zig-out/
 *.md
 *.MD
 !README.MD
+
+.vscode/
+.wake/
