@@ -165,6 +165,66 @@ pub const U256 = struct {
         return self;
     }
 
+    /// Sets self to the sum x + y and returns self.
+    /// Performs 256-bit addition with carry propagation, wrapping on overflow.
+    pub fn add(self: *U256, x: U256, y: U256) *U256 {
+        var carry: u1 = 0;
+
+        const r0 = @addWithOverflow(x.limbs[0], y.limbs[0]);
+        self.limbs[0] = r0[0];
+        carry = r0[1];
+
+        const r1 = @addWithOverflow(x.limbs[1], y.limbs[1]);
+        const r1c = @addWithOverflow(r1[0], carry);
+        self.limbs[1] = r1c[0];
+        carry = r1[1] | r1c[1];
+
+        const r2 = @addWithOverflow(x.limbs[2], y.limbs[2]);
+        const r2c = @addWithOverflow(r2[0], carry);
+        self.limbs[2] = r2c[0];
+        carry = r2[1] | r2c[1];
+
+        const r3 = @addWithOverflow(x.limbs[3], y.limbs[3]);
+        const r3c = @addWithOverflow(r3[0], carry);
+        self.limbs[3] = r3c[0];
+
+        return self;
+    }
+
+    /// Adds x to self and returns self (in-place addition).
+    /// Equivalent to self = self + x.
+    pub fn iadd(self: *U256, x: U256) *U256 {
+        const self_copy = self.*;
+        return self.add(self_copy, x);
+    }
+
+    /// Sets self to the sum x + y and returns whether overflow occurred.
+    /// Returns true if the addition overflowed (carry out of the most significant limb).
+    pub fn addOverflow(self: *U256, x: U256, y: U256) bool {
+        var carry: u1 = 0;
+
+        const r0 = @addWithOverflow(x.limbs[0], y.limbs[0]);
+        self.limbs[0] = r0[0];
+        carry = r0[1];
+
+        const r1 = @addWithOverflow(x.limbs[1], y.limbs[1]);
+        const r1c = @addWithOverflow(r1[0], carry);
+        self.limbs[1] = r1c[0];
+        carry = r1[1] | r1c[1];
+
+        const r2 = @addWithOverflow(x.limbs[2], y.limbs[2]);
+        const r2c = @addWithOverflow(r2[0], carry);
+        self.limbs[2] = r2c[0];
+        carry = r2[1] | r2c[1];
+
+        const r3 = @addWithOverflow(x.limbs[3], y.limbs[3]);
+        const r3c = @addWithOverflow(r3[0], carry);
+        self.limbs[3] = r3c[0];
+        const final_carry = r3[1] | r3c[1];
+
+        return final_carry != 0;
+    }
+
     /// Writes all 32 bytes of self to the destination slice, including zero-bytes.
     /// If dest is larger than 32 bytes, self will fill the first 32 bytes, leaving the rest untouched.
     /// Returns error.BufferTooSmall if dest is smaller than 32 bytes.
@@ -903,4 +963,238 @@ test "U256 clone - independence" {
     // Clone should have new values
     try std.testing.expectEqual(@as(u64, 100), cloned.limbs[0]);
     try std.testing.expectEqual(@as(u64, 200), cloned.limbs[1]);
+}
+
+test "U256 add - simple no carry" {
+    const x = U256.init(100);
+    const y = U256.init(50);
+    var z = U256.initZero();
+
+    _ = z.add(x, y);
+    try std.testing.expectEqual(@as(u64, 150), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+}
+
+test "U256 add - with carry propagation" {
+    var x = U256.initZero();
+    var y = U256.initZero();
+    x.limbs[0] = 0xFFFFFFFFFFFFFFFF; // Max u64
+    y.limbs[0] = 1; // This will cause carry
+
+    var z = U256.initZero();
+    _ = z.add(x, y);
+
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[0]); // Wrapped to 0
+    try std.testing.expectEqual(@as(u64, 1), z.limbs[1]); // Carry propagated
+}
+
+test "U256 add - carry through multiple limbs" {
+    var x = U256.initZero();
+    var y = U256.initZero();
+    x.limbs[0] = 0xFFFFFFFFFFFFFFFF;
+    x.limbs[1] = 0xFFFFFFFFFFFFFFFF;
+    x.limbs[2] = 0xFFFFFFFFFFFFFFFF;
+    y.limbs[0] = 1;
+
+    var z = U256.initZero();
+    _ = z.add(x, y);
+
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 1), z.limbs[3]);
+}
+
+test "U256 add - overflow wraps" {
+    var x = U256.initZero();
+    var y = U256.initZero();
+    // Set all limbs to max
+    x.limbs[0] = 0xFFFFFFFFFFFFFFFF;
+    x.limbs[1] = 0xFFFFFFFFFFFFFFFF;
+    x.limbs[2] = 0xFFFFFFFFFFFFFFFF;
+    x.limbs[3] = 0xFFFFFFFFFFFFFFFF;
+    y.limbs[0] = 1;
+
+    var z = U256.initZero();
+    _ = z.add(x, y);
+
+    // Should wrap to zero
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[3]);
+}
+
+test "U256 add - zero identity" {
+    const x = U256.init(12345);
+    const zero = U256.initZero();
+    var z = U256.initZero();
+
+    _ = z.add(x, zero);
+    try std.testing.expectEqual(@as(u64, 12345), z.limbs[0]);
+}
+
+test "U256 add - large values" {
+    var x = U256.initZero();
+    var y = U256.initZero();
+    x.limbs[0] = 0x1111111111111111;
+    x.limbs[1] = 0x2222222222222222;
+    x.limbs[2] = 0x3333333333333333;
+    x.limbs[3] = 0x4444444444444444;
+
+    y.limbs[0] = 0x5555555555555555;
+    y.limbs[1] = 0x6666666666666666;
+    y.limbs[2] = 0x7777777777777777;
+    y.limbs[3] = 0x8888888888888888;
+
+    var z = U256.initZero();
+    _ = z.add(x, y);
+
+    try std.testing.expectEqual(@as(u64, 0x6666666666666666), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0x8888888888888888), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0xAAAAAAAAAAAAAAAA), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0xCCCCCCCCCCCCCCCC), z.limbs[3]);
+}
+
+test "U256 iadd - simple" {
+    var z = U256.init(100);
+    const x = U256.init(50);
+
+    _ = z.iadd(x);
+    try std.testing.expectEqual(@as(u64, 150), z.limbs[0]);
+}
+
+test "U256 iadd - modifies self" {
+    var z = U256.init(10);
+    const x = U256.init(5);
+
+    const original_value = z.limbs[0];
+    _ = z.iadd(x);
+
+    // z should be modified
+    try std.testing.expect(z.limbs[0] != original_value);
+    try std.testing.expectEqual(@as(u64, 15), z.limbs[0]);
+}
+
+test "U256 iadd - chaining" {
+    var z = U256.init(1);
+    const x = U256.init(2);
+    const y = U256.init(3);
+    const w = U256.init(4);
+
+    _ = z.iadd(x).iadd(y).iadd(w);
+
+    try std.testing.expectEqual(@as(u64, 10), z.limbs[0]); // 1+2+3+4
+}
+
+test "U256 iadd - with carry" {
+    var z = U256.initZero();
+    var x = U256.initZero();
+    z.limbs[0] = 0xFFFFFFFFFFFFFFFF;
+    x.limbs[0] = 2;
+
+    _ = z.iadd(x);
+
+    try std.testing.expectEqual(@as(u64, 1), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 1), z.limbs[1]);
+}
+
+test "U256 addOverflow - no overflow" {
+    const x = U256.init(100);
+    const y = U256.init(50);
+    var z = U256.initZero();
+
+    const overflow = z.addOverflow(x, y);
+    try std.testing.expectEqual(false, overflow);
+    try std.testing.expectEqual(@as(u64, 150), z.limbs[0]);
+}
+
+test "U256 addOverflow - overflow on max value" {
+    var x = U256.initZero();
+    var y = U256.initZero();
+    // Set all limbs to max
+    x.limbs[0] = 0xFFFFFFFFFFFFFFFF;
+    x.limbs[1] = 0xFFFFFFFFFFFFFFFF;
+    x.limbs[2] = 0xFFFFFFFFFFFFFFFF;
+    x.limbs[3] = 0xFFFFFFFFFFFFFFFF;
+    y.limbs[0] = 1;
+
+    var z = U256.initZero();
+    const overflow = z.addOverflow(x, y);
+
+    try std.testing.expectEqual(true, overflow);
+    // Result should wrap to zero
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[3]);
+}
+
+test "U256 addOverflow - overflow from high limb" {
+    var x = U256.initZero();
+    var y = U256.initZero();
+    x.limbs[3] = 0xFFFFFFFFFFFFFFFF;
+    y.limbs[3] = 1;
+
+    var z = U256.initZero();
+    const overflow = z.addOverflow(x, y);
+
+    try std.testing.expectEqual(true, overflow);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[3]);
+}
+
+test "U256 addOverflow - no overflow with carry propagation" {
+    var x = U256.initZero();
+    var y = U256.initZero();
+    x.limbs[0] = 0xFFFFFFFFFFFFFFFF;
+    x.limbs[1] = 0xFFFFFFFFFFFFFFFF;
+    x.limbs[2] = 0xFFFFFFFFFFFFFFFF;
+    y.limbs[0] = 1;
+
+    var z = U256.initZero();
+    const overflow = z.addOverflow(x, y);
+
+    // Carry propagates to limb[3] but doesn't overflow
+    try std.testing.expectEqual(false, overflow);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 1), z.limbs[3]);
+}
+
+test "U256 addOverflow - large values no overflow" {
+    var x = U256.initZero();
+    var y = U256.initZero();
+    x.limbs[0] = 0x1111111111111111;
+    x.limbs[1] = 0x2222222222222222;
+    x.limbs[2] = 0x3333333333333333;
+    x.limbs[3] = 0x4444444444444444;
+
+    y.limbs[0] = 0x5555555555555555;
+    y.limbs[1] = 0x6666666666666666;
+    y.limbs[2] = 0x7777777777777777;
+    y.limbs[3] = 0x8888888888888888;
+
+    var z = U256.initZero();
+    const overflow = z.addOverflow(x, y);
+
+    try std.testing.expectEqual(false, overflow);
+    try std.testing.expectEqual(@as(u64, 0x6666666666666666), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0x8888888888888888), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0xAAAAAAAAAAAAAAAA), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0xCCCCCCCCCCCCCCCC), z.limbs[3]);
+}
+
+test "U256 addOverflow - overflow with partial max" {
+    var x = U256.initZero();
+    var y = U256.initZero();
+    x.limbs[3] = 0xFFFFFFFFFFFFFFFF;
+    x.limbs[2] = 0xFFFFFFFFFFFFFFFF;
+    y.limbs[3] = 0xFFFFFFFFFFFFFFFF;
+    y.limbs[2] = 0xFFFFFFFFFFFFFFFF;
+
+    var z = U256.initZero();
+    const overflow = z.addOverflow(x, y);
+
+    try std.testing.expectEqual(true, overflow);
 }
