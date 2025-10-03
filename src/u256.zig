@@ -150,8 +150,45 @@ pub const U256 = struct {
     }
 
     /// Returns the lower 64 bits of self.
-    pub fn toU64(self: U256) u64 {
+    pub fn lowerU64(self: U256) u64 {
         return self.limbs[0];
+    }
+
+    /// Returns whether the value overflows 64 bits.
+    /// If this returns false, the value can safely fit in a u64.
+    pub fn overflowsU64(self: U256) bool {
+        return (self.limbs[1] | self.limbs[2] | self.limbs[3]) != 0;
+    }
+
+    /// Creates a new U256 identical to self.
+    pub fn clone(self: U256) U256 {
+        return self;
+    }
+
+    /// Writes all 32 bytes of self to the destination slice, including zero-bytes.
+    /// If dest is larger than 32 bytes, self will fill the first 32 bytes, leaving the rest untouched.
+    /// Returns error.BufferTooSmall if dest is smaller than 32 bytes.
+    pub fn putUint256(self: U256, dest: []u8) error{BufferTooSmall}!void {
+        if (dest.len < 32) return error.BufferTooSmall;
+        mem.writeInt(u64, dest[0..8], self.limbs[3], .big);
+        mem.writeInt(u64, dest[8..16], self.limbs[2], .big);
+        mem.writeInt(u64, dest[16..24], self.limbs[1], .big);
+        mem.writeInt(u64, dest[24..32], self.limbs[0], .big);
+    }
+
+    /// Writes all 32 bytes of self to the destination array, including zero-bytes.
+    pub fn writeToArray32(self: U256, dest: *[32]u8) void {
+        mem.writeInt(u64, dest[0..8], self.limbs[3], .big);
+        mem.writeInt(u64, dest[8..16], self.limbs[2], .big);
+        mem.writeInt(u64, dest[16..24], self.limbs[1], .big);
+        mem.writeInt(u64, dest[24..32], self.limbs[0], .big);
+    }
+
+    /// Writes all 20 bytes of self to the destination array, including zero-bytes.
+    pub fn writeToArray20(self: U256, dest: *[20]u8) void {
+        mem.writeInt(u32, dest[0..4], @as(u32, @truncate(self.limbs[2])), .big);
+        mem.writeInt(u64, dest[4..12], self.limbs[1], .big);
+        mem.writeInt(u64, dest[12..20], self.limbs[0], .big);
     }
 
     // setBytes functions for each length (1-32 bytes)
@@ -658,26 +695,212 @@ test "U256 writeBytesToEnd - empty buffer" {
     z.writeBytesToEnd(&buf); // Should not crash
 }
 
-test "U256 toU64 - zero" {
+test "U256 lowerU64 - zero" {
     const z = U256.initZero();
-    try std.testing.expectEqual(@as(u64, 0), z.toU64());
+    try std.testing.expectEqual(@as(u64, 0), z.lowerU64());
 }
 
-test "U256 toU64 - small value" {
+test "U256 lowerU64 - small value" {
     const z = U256.init(0x1234567890ABCDEF);
-    try std.testing.expectEqual(@as(u64, 0x1234567890ABCDEF), z.toU64());
+    try std.testing.expectEqual(@as(u64, 0x1234567890ABCDEF), z.lowerU64());
 }
 
-test "U256 toU64 - max u64" {
+test "U256 lowerU64 - max u64" {
     const z = U256.init(0xFFFFFFFFFFFFFFFF);
-    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.toU64());
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.lowerU64());
 }
 
-test "U256 toU64 - truncates higher limbs" {
+test "U256 lowerU64 - truncates higher limbs" {
     var z = U256.initZero();
     z.limbs[0] = 0x1111111111111111;
     z.limbs[1] = 0x2222222222222222;
     z.limbs[2] = 0x3333333333333333;
     z.limbs[3] = 0x4444444444444444;
-    try std.testing.expectEqual(@as(u64, 0x1111111111111111), z.toU64());
+    try std.testing.expectEqual(@as(u64, 0x1111111111111111), z.lowerU64());
+}
+
+test "U256 putUint256 - success" {
+    var z = U256.initZero();
+    _ = z.setBytes(&[_]u8{
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+        0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10,
+        0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
+        0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20,
+    });
+    var dest: [32]u8 = undefined;
+    try z.putUint256(&dest);
+    try std.testing.expectEqual(@as(u8, 0x01), dest[0]);
+    try std.testing.expectEqual(@as(u8, 0x10), dest[15]);
+    try std.testing.expectEqual(@as(u8, 0x20), dest[31]);
+}
+
+test "U256 putUint256 - buffer too small" {
+    const z = U256.init(0x1234);
+    var dest: [31]u8 = undefined;
+    try std.testing.expectError(error.BufferTooSmall, z.putUint256(&dest));
+}
+
+test "U256 putUint256 - larger buffer" {
+    const z = U256.init(0x42);
+    var dest: [40]u8 = [_]u8{0xFF} ** 40;
+    try z.putUint256(&dest);
+    // First 32 bytes should be written
+    try std.testing.expectEqual(@as(u8, 0), dest[0]);
+    try std.testing.expectEqual(@as(u8, 0x42), dest[31]);
+    // Remaining bytes should be untouched
+    try std.testing.expectEqual(@as(u8, 0xFF), dest[32]);
+    try std.testing.expectEqual(@as(u8, 0xFF), dest[39]);
+}
+
+test "U256 writeToArray32 - zero" {
+    const z = U256.initZero();
+    var dest: [32]u8 = undefined;
+    z.writeToArray32(&dest);
+    for (dest) |byte| {
+        try std.testing.expectEqual(@as(u8, 0), byte);
+    }
+}
+
+test "U256 writeToArray32 - full value" {
+    var z = U256.initZero();
+    const bytes = [_]u8{
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+        0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10,
+        0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
+        0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20,
+    };
+    _ = z.setBytes(&bytes);
+    var dest: [32]u8 = undefined;
+    z.writeToArray32(&dest);
+    try std.testing.expectEqualSlices(u8, &bytes, &dest);
+}
+
+test "U256 writeToArray32 - round trip" {
+    var z = U256.initZero();
+    z.limbs[0] = 0x1122334455667788;
+    z.limbs[1] = 0x99AABBCCDDEEFF00;
+    z.limbs[2] = 0x0011223344556677;
+    z.limbs[3] = 0x8899AABBCCDDEEFF;
+
+    var dest: [32]u8 = undefined;
+    z.writeToArray32(&dest);
+
+    var z2 = U256.initZero();
+    _ = z2.setBytes(&dest);
+
+    try std.testing.expectEqual(z.limbs[0], z2.limbs[0]);
+    try std.testing.expectEqual(z.limbs[1], z2.limbs[1]);
+    try std.testing.expectEqual(z.limbs[2], z2.limbs[2]);
+    try std.testing.expectEqual(z.limbs[3], z2.limbs[3]);
+}
+
+test "U256 writeToArray20 - zero" {
+    const z = U256.initZero();
+    var dest: [20]u8 = undefined;
+    z.writeToArray20(&dest);
+    for (dest) |byte| {
+        try std.testing.expectEqual(@as(u8, 0), byte);
+    }
+}
+
+test "U256 writeToArray20 - ethereum address" {
+    var z = U256.initZero();
+    const addr = [_]u8{
+        0x01, 0x02, 0x03, 0x04,
+        0x05, 0x06, 0x07, 0x08,
+        0x09, 0x0A, 0x0B, 0x0C,
+        0x0D, 0x0E, 0x0F, 0x10,
+        0x11, 0x12, 0x13, 0x14,
+    };
+    _ = z.setBytes(&addr);
+    var dest: [20]u8 = undefined;
+    z.writeToArray20(&dest);
+    try std.testing.expectEqualSlices(u8, &addr, &dest);
+}
+
+test "U256 writeToArray20 - truncates high bytes" {
+    var z = U256.initZero();
+    const bytes = [_]u8{
+        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+        0xFF, 0xFF, 0xFF, 0xFF, 0x01, 0x02, 0x03, 0x04,
+        0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C,
+        0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14,
+    };
+    _ = z.setBytes(&bytes);
+    var dest: [20]u8 = undefined;
+    z.writeToArray20(&dest);
+
+    // Should only contain the last 20 bytes
+    try std.testing.expectEqual(@as(u8, 0x01), dest[0]);
+    try std.testing.expectEqual(@as(u8, 0x14), dest[19]);
+}
+
+test "U256 overflowsU64 - fits in u64" {
+    const z = U256.init(0xFFFFFFFFFFFFFFFF);
+    try std.testing.expectEqual(false, z.overflowsU64());
+}
+
+test "U256 overflowsU64 - zero" {
+    const z = U256.initZero();
+    try std.testing.expectEqual(false, z.overflowsU64());
+}
+
+test "U256 overflowsU64 - overflows in limb 1" {
+    var z = U256.initZero();
+    z.limbs[0] = 0xFFFFFFFFFFFFFFFF;
+    z.limbs[1] = 1;
+    try std.testing.expectEqual(true, z.overflowsU64());
+}
+
+test "U256 overflowsU64 - overflows in limb 2" {
+    var z = U256.initZero();
+    z.limbs[0] = 0x1234;
+    z.limbs[2] = 1;
+    try std.testing.expectEqual(true, z.overflowsU64());
+}
+
+test "U256 overflowsU64 - overflows in limb 3" {
+    var z = U256.initZero();
+    z.limbs[3] = 0xFFFFFFFFFFFFFFFF;
+    try std.testing.expectEqual(true, z.overflowsU64());
+}
+
+test "U256 clone - zero" {
+    const z = U256.initZero();
+    const cloned = z.clone();
+    try std.testing.expectEqual(z.limbs[0], cloned.limbs[0]);
+    try std.testing.expectEqual(z.limbs[1], cloned.limbs[1]);
+    try std.testing.expectEqual(z.limbs[2], cloned.limbs[2]);
+    try std.testing.expectEqual(z.limbs[3], cloned.limbs[3]);
+}
+
+test "U256 clone - full value" {
+    var z = U256.initZero();
+    z.limbs[0] = 0x1122334455667788;
+    z.limbs[1] = 0x99AABBCCDDEEFF00;
+    z.limbs[2] = 0x0011223344556677;
+    z.limbs[3] = 0x8899AABBCCDDEEFF;
+
+    const cloned = z.clone();
+    try std.testing.expectEqual(z.limbs[0], cloned.limbs[0]);
+    try std.testing.expectEqual(z.limbs[1], cloned.limbs[1]);
+    try std.testing.expectEqual(z.limbs[2], cloned.limbs[2]);
+    try std.testing.expectEqual(z.limbs[3], cloned.limbs[3]);
+}
+
+test "U256 clone - independence" {
+    var z = U256.init(42);
+    var cloned = z.clone();
+
+    // Modify the clone
+    cloned.limbs[0] = 100;
+    cloned.limbs[1] = 200;
+
+    // Original should be unchanged
+    try std.testing.expectEqual(@as(u64, 42), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+
+    // Clone should have new values
+    try std.testing.expectEqual(@as(u64, 100), cloned.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 200), cloned.limbs[1]);
 }
