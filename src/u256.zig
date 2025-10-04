@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const mem = std.mem;
 const math = std.math;
 const assert = std.debug.assert;
+const division = @import("division.zig");
 
 /// U256 represents a 256-bit unsigned integer as an array of 4 u64 limbs.
 /// Limbs are stored in little-endian order:
@@ -34,6 +35,53 @@ pub const U256 = struct {
     pub fn clear(self: *U256) *U256 {
         self.limbs = [_]u64{0} ** 4;
         return self;
+    }
+
+    /// Sets self to x and returns self.
+    pub fn set(self: *U256, x: U256) *U256 {
+        self.limbs = x.limbs;
+        return self;
+    }
+
+    /// Returns true if self is zero.
+    pub fn isZero(self: U256) bool {
+        return (self.limbs[0] | self.limbs[1] | self.limbs[2] | self.limbs[3]) == 0;
+    }
+
+    /// Returns true if self equals other.
+    pub fn eq(self: U256, other: U256) bool {
+        return self.limbs[0] == other.limbs[0] and
+            self.limbs[1] == other.limbs[1] and
+            self.limbs[2] == other.limbs[2] and
+            self.limbs[3] == other.limbs[3];
+    }
+
+    /// Returns true if self is less than other.
+    pub fn lt(self: U256, other: U256) bool {
+        if (self.limbs[3] != other.limbs[3]) return self.limbs[3] < other.limbs[3];
+        if (self.limbs[2] != other.limbs[2]) return self.limbs[2] < other.limbs[2];
+        if (self.limbs[1] != other.limbs[1]) return self.limbs[1] < other.limbs[1];
+        return self.limbs[0] < other.limbs[0];
+    }
+
+    /// Returns true if self is less than or equal to other.
+    pub fn lte(self: U256, other: U256) bool {
+        return self.lt(other) or self.eq(other);
+    }
+
+    /// Returns true if self is greater than other.
+    pub fn gt(self: U256, other: U256) bool {
+        return other.lt(self);
+    }
+
+    /// Returns true if self is greater than or equal to other.
+    pub fn gte(self: U256, other: U256) bool {
+        return other.lt(self) or self.eq(other);
+    }
+
+    /// Returns true if self can fit in a u64 (all upper limbs are zero).
+    pub fn isU64(self: U256) bool {
+        return (self.limbs[1] | self.limbs[2] | self.limbs[3]) == 0;
     }
 
     /// Interprets buf as the bytes of a big-endian unsigned integer,
@@ -223,6 +271,80 @@ pub const U256 = struct {
         const final_carry = r3[1] | r3c[1];
 
         return final_carry != 0;
+    }
+
+    /// Sets self to the difference x - y and returns self.
+    /// Performs 256-bit subtraction with borrow propagation, wrapping on underflow.
+    pub fn sub(self: *U256, x: U256, y: U256) *U256 {
+        var borrow: u1 = 0;
+
+        const r0 = @subWithOverflow(x.limbs[0], y.limbs[0]);
+        self.limbs[0] = r0[0];
+        borrow = r0[1];
+
+        const r1 = @subWithOverflow(x.limbs[1], y.limbs[1]);
+        const r1b = @subWithOverflow(r1[0], borrow);
+        self.limbs[1] = r1b[0];
+        borrow = r1[1] | r1b[1];
+
+        const r2 = @subWithOverflow(x.limbs[2], y.limbs[2]);
+        const r2b = @subWithOverflow(r2[0], borrow);
+        self.limbs[2] = r2b[0];
+        borrow = r2[1] | r2b[1];
+
+        const r3 = @subWithOverflow(x.limbs[3], y.limbs[3]);
+        const r3b = @subWithOverflow(r3[0], borrow);
+        self.limbs[3] = r3b[0];
+
+        return self;
+    }
+
+    /// Sets self to the difference x - y and returns whether underflow occurred.
+    /// Returns true if the subtraction underflowed (borrow out of the most significant limb).
+    pub fn subOverflow(self: *U256, x: U256, y: U256) bool {
+        var borrow: u1 = 0;
+
+        const r0 = @subWithOverflow(x.limbs[0], y.limbs[0]);
+        self.limbs[0] = r0[0];
+        borrow = r0[1];
+
+        const r1 = @subWithOverflow(x.limbs[1], y.limbs[1]);
+        const r1b = @subWithOverflow(r1[0], borrow);
+        self.limbs[1] = r1b[0];
+        borrow = r1[1] | r1b[1];
+
+        const r2 = @subWithOverflow(x.limbs[2], y.limbs[2]);
+        const r2b = @subWithOverflow(r2[0], borrow);
+        self.limbs[2] = r2b[0];
+        borrow = r2[1] | r2b[1];
+
+        const r3 = @subWithOverflow(x.limbs[3], y.limbs[3]);
+        const r3b = @subWithOverflow(r3[0], borrow);
+        self.limbs[3] = r3b[0];
+        const final_borrow = r3[1] | r3b[1];
+
+        return final_borrow != 0;
+    }
+
+    /// Sets self to the modulus x % y and returns self.
+    /// If y == 0, self is set to 0 (differs from big.Int behavior).
+    pub fn mod(self: *U256, x: U256, y: U256) *U256 {
+        if (y.isZero() or x.eq(y)) {
+            return self.clear();
+        }
+        if (x.lt(y)) {
+            return self.set(x);
+        }
+
+        // Shortcut for small values
+        if (x.isU64()) {
+            return self.setInt(x.limbs[0] % y.limbs[0]);
+        }
+
+        var quot: [4]u64 = undefined;
+        var rem = U256.initZero();
+        division.udivrem(&quot, &x.limbs, &y, &rem);
+        return self.set(rem);
     }
 
     /// Writes all 32 bytes of self to the destination slice, including zero-bytes.
@@ -1197,4 +1319,178 @@ test "U256 addOverflow - overflow with partial max" {
     const overflow = z.addOverflow(x, y);
 
     try std.testing.expectEqual(true, overflow);
+}
+
+test "U256 set" {
+    const x = U256.init(12345);
+    var z = U256.initZero();
+    _ = z.set(x);
+    try std.testing.expectEqual(@as(u64, 12345), z.limbs[0]);
+}
+
+test "U256 isZero" {
+    const z = U256.initZero();
+    try std.testing.expectEqual(true, z.isZero());
+
+    const x = U256.init(1);
+    try std.testing.expectEqual(false, x.isZero());
+}
+
+test "U256 eq" {
+    const x = U256.init(42);
+    const y = U256.init(42);
+    const z = U256.init(43);
+
+    try std.testing.expectEqual(true, x.eq(y));
+    try std.testing.expectEqual(false, x.eq(z));
+}
+
+test "U256 lt" {
+    const x = U256.init(100);
+    const y = U256.init(200);
+
+    try std.testing.expectEqual(true, x.lt(y));
+    try std.testing.expectEqual(false, y.lt(x));
+    try std.testing.expectEqual(false, x.lt(x));
+}
+
+test "U256 lt - multi limb" {
+    var x = U256.initZero();
+    var y = U256.initZero();
+    x.limbs[3] = 1;
+    y.limbs[3] = 2;
+
+    try std.testing.expectEqual(true, x.lt(y));
+}
+
+test "U256 isU64" {
+    const x = U256.init(0xFFFFFFFFFFFFFFFF);
+    try std.testing.expectEqual(true, x.isU64());
+
+    var y = U256.initZero();
+    y.limbs[0] = 1;
+    y.limbs[1] = 1;
+    try std.testing.expectEqual(false, y.isU64());
+}
+
+test "U256 sub - simple no borrow" {
+    const x = U256.init(100);
+    const y = U256.init(50);
+    var z = U256.initZero();
+
+    _ = z.sub(x, y);
+    try std.testing.expectEqual(@as(u64, 50), z.limbs[0]);
+}
+
+test "U256 sub - with borrow" {
+    var x = U256.initZero();
+    var y = U256.initZero();
+    x.limbs[0] = 0;
+    x.limbs[1] = 1;
+    y.limbs[0] = 1;
+
+    var z = U256.initZero();
+    _ = z.sub(x, y);
+
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+}
+
+test "U256 sub - underflow wraps" {
+    const x = U256.init(50);
+    const y = U256.init(100);
+    var z = U256.initZero();
+
+    _ = z.sub(x, y);
+    // Should wrap around
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFCE), z.limbs[0]); // -50 in two's complement
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[3]);
+}
+
+test "U256 subOverflow - no underflow" {
+    const x = U256.init(100);
+    const y = U256.init(50);
+    var z = U256.initZero();
+
+    const underflow = z.subOverflow(x, y);
+    try std.testing.expectEqual(false, underflow);
+    try std.testing.expectEqual(@as(u64, 50), z.limbs[0]);
+}
+
+test "U256 subOverflow - underflow detected" {
+    const x = U256.init(50);
+    const y = U256.init(100);
+    var z = U256.initZero();
+
+    const underflow = z.subOverflow(x, y);
+    try std.testing.expectEqual(true, underflow);
+}
+
+test "U256 subOverflow - borrow propagation no underflow" {
+    var x = U256.initZero();
+    var y = U256.initZero();
+    x.limbs[0] = 0;
+    x.limbs[1] = 1;
+    y.limbs[0] = 1;
+    y.limbs[1] = 0;
+
+    var z = U256.initZero();
+    const underflow = z.subOverflow(x, y);
+
+    try std.testing.expectEqual(false, underflow);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+}
+
+test "U256 mod - simple" {
+    const x = U256.init(10);
+    const y = U256.init(3);
+    var z = U256.initZero();
+
+    _ = z.mod(x, y);
+    try std.testing.expectEqual(@as(u64, 1), z.limbs[0]);
+}
+
+test "U256 mod - x less than y" {
+    const x = U256.init(5);
+    const y = U256.init(10);
+    var z = U256.initZero();
+
+    _ = z.mod(x, y);
+    try std.testing.expectEqual(@as(u64, 5), z.limbs[0]);
+}
+
+test "U256 mod - x equals y" {
+    const x = U256.init(42);
+    const y = U256.init(42);
+    var z = U256.initZero();
+
+    _ = z.mod(x, y);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[0]);
+}
+
+test "U256 mod - modulo by zero" {
+    const x = U256.init(100);
+    const y = U256.initZero();
+    var z = U256.initZero();
+
+    _ = z.mod(x, y);
+    try std.testing.expectEqual(true, z.isZero());
+}
+
+test "U256 mod - large values" {
+    var x = U256.initZero();
+    var y = U256.initZero();
+    x.limbs[0] = 100;
+    x.limbs[1] = 200;
+    y.limbs[0] = 7;
+
+    var z = U256.initZero();
+    _ = z.mod(x, y);
+
+    // (100 + 200 * 2^64) % 7
+    // Calculate expected: 100 % 7 = 2, (200 * 2^64) % 7
+    // 2^64 % 7 = 2, so (200 * 2) % 7 = 400 % 7 = 1
+    // Total: (2 + 1) % 7 = 3
+    try std.testing.expectEqual(@as(u64, 3), z.limbs[0]);
 }
