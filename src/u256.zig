@@ -132,7 +132,7 @@ pub const U256 = struct {
     /// Interprets self and d as two's complement signed integers,
     /// performs signed division self / d, modifying self in place.
     /// Returns self = self / d (signed).
-    pub fn isDiv(self: *U256, d: U256) *U256 {
+    pub fn iSDiv(self: *U256, d: U256) *U256 {
         const self_copy = self.*;
         return self.sDiv(self_copy, d);
     }
@@ -4028,21 +4028,21 @@ test "U256 sDiv - zero dividend" {
     try std.testing.expect(z.isZero());
 }
 
-test "U256 isDiv - simple" {
+test "U256 iSDiv - simple" {
     var z = U256.init(100);
     const d = U256.init(10);
 
-    _ = z.isDiv(d);
+    _ = z.iSDiv(d);
     // 100 / 10 = 10
     try std.testing.expectEqual(@as(u64, 10), z.limbs[0]);
 }
 
-test "U256 isDiv - negative" {
+test "U256 iSDiv - negative" {
     var z = U256.initZero();
     _ = z.neg(U256.init(100)); // z = -100
     const d = U256.init(10);
 
-    _ = z.isDiv(d);
+    _ = z.iSDiv(d);
     // -100 / 10 = -10
     var expected = U256.initZero();
     _ = expected.neg(U256.init(10));
