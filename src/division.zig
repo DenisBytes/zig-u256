@@ -2,9 +2,20 @@ const std = @import("std");
 const U256 = @import("u256.zig").U256;
 
 /// Computes the reciprocal of d as <^d, ^0> / d.
+/// Equivalent to Go's bits.Div64(^d, ^uint64(0), d)
 pub fn reciprocal2by1(d: u64) u64 {
-    const reciprocal = @divTrunc(~d, d);
-    return reciprocal;
+    // Compute (2^128 - 2^64) / d = ((~d) << 64 | ~0) / d
+    // Since we're dividing a 128-bit number by a 64-bit number,
+    // and d is normalized (top bit set), the quotient fits in 64 bits
+    const hi = ~d;
+    const lo = ~@as(u64, 0);
+
+    // Build the 128-bit dividend
+    const dividend: u128 = (@as(u128, hi) << 64) | lo;
+    const quotient = dividend / d;
+
+    // The quotient must fit in 64 bits (guaranteed when d is normalized)
+    return @truncate(quotient);
 }
 
 /// Divides <uh, ul> / d and produces both quotient and remainder.
@@ -21,7 +32,7 @@ pub fn udivrem2by1(uh: u64, ul: u64, d: u64, reciprocal: u64) struct { quot: u64
     ql = add1[0];
     const carry1: u64 = add1[1];
 
-    // qh += uh + carry
+    // qh += uh + carry (three-way add, keep only low 64 bits)
     const add2 = @addWithOverflow(qh, uh);
     const qh_tmp = add2[0];
 
@@ -50,7 +61,7 @@ pub fn udivrem2by1(uh: u64, ul: u64, d: u64, reciprocal: u64) struct { quot: u64
 /// Returns the remainder.
 pub fn udivremBy1(quot: []u64, u: []const u64, d: u64) u64 {
     const reciprocal = reciprocal2by1(d);
-    var rem = u[u.len - 1]; // Set the top word as remainder
+    var rem = u[u.len - 1];
 
     var j: usize = u.len - 1;
     while (j > 0) {
@@ -125,7 +136,7 @@ pub fn udivremKnuth(quot: []u64, u: []u64, d: []const u64) void {
         var qhat: u64 = 0;
         var rhat: u64 = 0;
 
-        if (u_high >= dh) { // Division overflows
+        if (u_high >= dh) { 
             qhat = ~@as(u64, 0);
         } else {
             const div_result = udivrem2by1(u_high, u_mid, dh, reciprocal);
@@ -141,17 +152,16 @@ pub fn udivremKnuth(quot: []u64, u: []u64, d: []const u64) void {
             }
         }
 
-        // Multiply and subtract
         const borrow = subMulTo(u[j .. j + d.len], d, qhat);
         const u_high_new = u_high -% borrow;
         u[j + d.len] = u_high_new;
 
-        if (u_high < borrow) { // Too much subtracted, add back
+        if (u_high < borrow) { 
             qhat -= 1;
             u[j + d.len] +%= addTo(u[j .. j + d.len], d);
         }
 
-        quot[j] = qhat; // Store quotient digit
+        quot[j] = qhat; 
     }
 }
 
@@ -159,7 +169,7 @@ pub fn udivremKnuth(quot: []u64, u: []u64, d: []const u64) void {
 /// The quotient is stored in provided quot - len(u)-len(d)+1 words.
 /// Loosely follows Knuth's division algorithm (Algorithm D).
 pub fn udivrem(quot: []u64, u: []const u64, d: *const U256, rem: ?*U256) void {
-    // Find the actual length of d (skip leading zeros)
+    // ~d = 2^64 - 1 - d
     var d_len: usize = 0;
     var i: usize = d.limbs.len;
     while (i > 0) {
@@ -171,17 +181,14 @@ pub fn udivrem(quot: []u64, u: []const u64, d: *const U256, rem: ?*U256) void {
     }
 
     if (d_len == 0) {
-        // Division by zero - set everything to zero
         if (rem) |r| {
             _ = r.clear();
         }
         return;
     }
 
-    // Normalize: find shift amount
     const shift: u6 = @intCast(@clz(d.limbs[d_len - 1]));
 
-    // Normalized divisor
     var dn_storage: [4]u64 = undefined;
     const dn = dn_storage[0..d_len];
 
@@ -194,11 +201,9 @@ pub fn udivrem(quot: []u64, u: []const u64, d: *const U256, rem: ?*U256) void {
         }
         dn[0] = d.limbs[0] << shift;
     } else {
-        // No normalization needed
         @memcpy(dn, d.limbs[0..d_len]);
     }
 
-    // Find actual length of u (skip leading zeros)
     var u_len: usize = 0;
     i = u.len;
     while (i > 0) {
@@ -210,14 +215,12 @@ pub fn udivrem(quot: []u64, u: []const u64, d: *const U256, rem: ?*U256) void {
     }
 
     if (u_len < d_len) {
-        // u < d, quotient is 0, remainder is u
         if (rem) |r| {
             @memcpy(r.limbs[0..u.len], u);
         }
         return;
     }
 
-    // Normalized dividend
     var un_storage: [9]u64 = undefined;
     const un = un_storage[0 .. u_len + 1];
 
@@ -235,7 +238,6 @@ pub fn udivrem(quot: []u64, u: []const u64, d: *const U256, rem: ?*U256) void {
         un[u_len] = 0;
     }
 
-    // Single-word division
     if (d_len == 1) {
         const r = udivremBy1(quot, un, dn[0]);
         if (rem) |r_ptr| {
@@ -247,10 +249,8 @@ pub fn udivrem(quot: []u64, u: []const u64, d: *const U256, rem: ?*U256) void {
         return;
     }
 
-    // Multi-word division
     udivremKnuth(quot, un, dn);
 
-    // Denormalize remainder
     if (rem) |r| {
         if (shift > 0) {
             const lshift: u6 = @intCast(64 - @as(u8, shift));
@@ -263,7 +263,6 @@ pub fn udivrem(quot: []u64, u: []const u64, d: *const U256, rem: ?*U256) void {
             @memcpy(r.limbs[0..d_len], un[0..d_len]);
         }
 
-        // Clear remaining limbs
         i = d_len;
         while (i < 4) : (i += 1) {
             r.limbs[i] = 0;
