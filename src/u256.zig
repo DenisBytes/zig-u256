@@ -5,6 +5,7 @@ const math = std.math;
 const assert = std.debug.assert;
 const division = @import("division.zig");
 const multiplication = @import("multiplication.zig");
+const modular = @import("mod.zig");
 
 /// U256 represents a 256-bit unsigned integer as an array of 4 u64 limbs.
 /// Limbs are stored in little-endian order:
@@ -28,6 +29,48 @@ pub const U256 = struct {
         return self.limbs[0];
     }
 
+    /// Sets self to the value of the byte at position n in self,
+    /// treating self as a big-endian 32-byte integer.
+    /// If n >= 32, self is set to 0.
+    ///
+    /// Big-endian byte numbering:
+    /// - n=0  refers to the most significant byte (MSB of limbs[3])
+    /// - n=31 refers to the least significant byte (LSB of limbs[0])
+    ///
+    /// Example: If self = 0x123456789ABCDEF0... and n=7,
+    /// returns the byte at position 7 from the left (big-endian).
+    pub fn byte(self: *U256, n: U256) *U256 {
+        // Get n as u64, check for overflow
+        if (!n.isU64()) {
+            // n is too large (>= 2^64), definitely >= 32
+            return self.clear();
+        }
+
+        const index = n.getU64();
+        if (index >= 32) {
+            return self.clear();
+        }
+
+        // Convert big-endian index to limb index
+        // Big-endian: index 0 = MSB of limbs[3], index 31 = LSB of limbs[0]
+        // limbs[3] contains bytes 0-7, limbs[2] contains bytes 8-15, etc.
+        const limb_index = 3 - (index / 8);
+        const byte_in_limb = index % 8;
+
+        // Extract the byte from the limb
+        // In a u64, the MSB is at the highest position (shift right by 56)
+        // byte_in_limb=0 means MSB (shift by 56), byte_in_limb=7 means LSB (shift by 0)
+        const shift: u6 = @intCast(56 - (byte_in_limb * 8));
+        const byte_value = (self.limbs[limb_index] >> shift) & 0xFF;
+
+        // Set self to the extracted byte value
+        self.limbs[0] = byte_value;
+        self.limbs[1] = 0;
+        self.limbs[2] = 0;
+        self.limbs[3] = 0;
+        return self;
+    }
+
     /// Sets self to the value of a u64 and returns self.
     pub fn setU64(self: *U256, val: u64) *U256 {
         self.limbs[0] = val;
@@ -43,6 +86,16 @@ pub const U256 = struct {
         self.limbs[1] = 0;
         self.limbs[2] = 0;
         self.limbs[3] = 0;
+        return self;
+    }
+
+    /// Sets all bits of self to 1 (sets to maximum U256 value) and returns self.
+    /// Result is 2^256 - 1 = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
+    pub fn setAllOne(self: *U256) *U256 {
+        self.limbs[0] = 0xFFFFFFFFFFFFFFFF;
+        self.limbs[1] = 0xFFFFFFFFFFFFFFFF;
+        self.limbs[2] = 0xFFFFFFFFFFFFFFFF;
+        self.limbs[3] = 0xFFFFFFFFFFFFFFFF;
         return self;
     }
 
@@ -75,6 +128,63 @@ pub const U256 = struct {
         return -1;
     }
 
+    /// Extends the sign of a two's complement signed integer.
+    /// Sets self to:
+    ///   - x if byteNum > 30
+    ///   - x interpreted as a signed number with sign-bit at (byteNum*8+7), extended to the full 256 bits
+    ///
+    /// This is commonly used in EVM SIGNEXTEND opcode implementation.
+    /// Based on evmone implementation: https://github.com/ethereum/evmone/pull/390
+    pub fn extendSign(self: *U256, x: U256, byte_num: U256) *U256 {
+        // If byte_num > 30, just copy x (no extension needed for full 256 bits)
+        if (byte_num.gtU64(30)) {
+            return self.set(x);
+        }
+
+        const e = byte_num.getU64();
+        _ = self.set(x);
+
+        const sign_word_index = e >> 3; // Index of the word with the sign bit (0-3)
+        const sign_byte_index = e & 7;  // Index of the sign byte in the sign word (0-7)
+        const sign_word = self.limbs[sign_word_index];
+        const sign_byte_offset: u6 = @intCast(sign_byte_index << 3); // Bit offset (0, 8, 16, ..., 56)
+        const sign_byte = sign_word >> sign_byte_offset; // Move sign byte to position 0
+
+        // Sign-extend the "sign" byte and move it to the right position
+        const sext_byte: u64 = @bitCast(@as(i64, @as(i8, @bitCast(@as(u8, @truncate(sign_byte))))));
+        const sext = sext_byte << sign_byte_offset;
+        const sign_mask = @as(u64, 0xFFFFFFFFFFFFFFFF) << sign_byte_offset;
+        const value = sign_word & ~sign_mask; // Reset extended bytes
+
+        self.limbs[sign_word_index] = sext | value; // Combine the result word
+
+        // Produce bits (all zeros or ones) for extended words.
+        // This is done by SAR of the sign-extended byte.
+        const sign_ex: u64 = @bitCast(@as(i64, @bitCast(sext_byte)) >> 8);
+
+        // Fill higher words with sign extension
+        switch (sign_word_index) {
+            0 => {
+                self.limbs[1] = sign_ex;
+                self.limbs[2] = sign_ex;
+                self.limbs[3] = sign_ex;
+            },
+            1 => {
+                self.limbs[2] = sign_ex;
+                self.limbs[3] = sign_ex;
+            },
+            2 => {
+                self.limbs[3] = sign_ex;
+            },
+            3 => {
+                // No extension needed for word 3
+            },
+            else => unreachable,
+        }
+
+        return self;
+    }
+
     /// Sets self to -x mod 2^256 and returns self.
     pub fn neg(self: *U256, x: U256) *U256 {
         return self.sub(U256.initZero(), x);
@@ -91,6 +201,54 @@ pub const U256 = struct {
             return self.set(x);
         }
         return self.sub(U256.initZero(), x);
+    }
+
+    /// Converts a big integer to U256 and sets the value to self.
+    /// Returns true if the value overflows (doesn't fit in 256 bits).
+    /// Handles both positive and negative big integers (negative values are converted using two's complement).
+    pub fn setFromBig(self: *U256, big: std.math.big.int.Const) bool {
+        _ = self.clear();
+
+        const limbs = big.limbs;
+        const positive = big.positive;
+
+        // On 64-bit systems, big.Int limbs are u64 (same as our limbs)
+        // On 32-bit systems, big.Int limbs are u32 (need to combine pairs)
+        const limb_bits = @bitSizeOf(std.math.big.Limb);
+
+        var overflow = false;
+
+        if (limb_bits == 64) {
+            // 64-bit architecture: direct copy
+            const max_limbs = @min(limbs.len, 4);
+            for (0..max_limbs) |i| {
+                self.limbs[i] = limbs[i];
+            }
+            overflow = limbs.len > 4;
+        } else if (limb_bits == 32) {
+            // 32-bit architecture: combine pairs of u32 into u64
+            const max_limbs = @min(limbs.len, 8);
+            overflow = limbs.len > 8;
+
+            var i: usize = 0;
+            while (i < max_limbs) : (i += 1) {
+                const limb_idx = i / 2;
+                if (i % 2 == 0) {
+                    self.limbs[limb_idx] = limbs[i];
+                } else {
+                    self.limbs[limb_idx] |= @as(u64, limbs[i]) << 32;
+                }
+            }
+        } else {
+            @compileError("Unsupported limb size for big integers");
+        }
+
+        // Handle negative numbers using two's complement
+        if (!positive) {
+            _ = self.neg(self.*);
+        }
+
+        return overflow;
     }
 
     /// Interprets n and d as two's complement signed integers,
@@ -166,6 +324,126 @@ pub const U256 = struct {
     /// Returns true if self is greater than or equal to other.
     pub fn gte(self: U256, other: U256) bool {
         return other.lt(self) or self.eq(other);
+    }
+
+    /// Returns true if self < other when both are interpreted as signed integers.
+    /// Uses two's complement representation where MSB indicates sign.
+    pub fn slt(self: U256, other: U256) bool {
+        const self_sign = self.sign();
+        const other_sign = other.sign();
+
+        // Different signs: negative < positive
+        if (self_sign >= 0 and other_sign < 0) {
+            return false;
+        }
+        if (self_sign < 0 and other_sign >= 0) {
+            return true;
+        }
+
+        // Same sign: compare as unsigned
+        return self.lt(other);
+    }
+
+    /// Returns true if self > other when both are interpreted as signed integers.
+    /// Uses two's complement representation where MSB indicates sign.
+    pub fn sgt(self: U256, other: U256) bool {
+        const self_sign = self.sign();
+        const other_sign = other.sign();
+
+        // Different signs: positive > negative
+        if (self_sign >= 0 and other_sign < 0) {
+            return true;
+        }
+        if (self_sign < 0 and other_sign >= 0) {
+            return false;
+        }
+
+        // Same sign: compare as unsigned
+        return self.gt(other);
+    }
+
+    /// Compares self with other and returns:
+    /// -1 if self < other
+    ///  0 if self == other
+    /// +1 if self > other
+    pub fn cmp(self: U256, other: U256) i8 {
+        // Compare by doing subtraction and checking for borrow
+        const d0, const carry0 = @subWithOverflow(self.limbs[0], other.limbs[0]);
+        const d1, const carry1 = @subWithOverflow(self.limbs[1], other.limbs[1]);
+        const d2, const carry2 = @subWithOverflow(self.limbs[2], other.limbs[2]);
+        const d3, const carry3 = @subWithOverflow(self.limbs[3], other.limbs[3]);
+
+        // Propagate carries
+        const d1_with_carry, const carry1_prop = @subWithOverflow(d1, carry0);
+        const d2_with_carry, const carry2_prop = @subWithOverflow(d2, carry1 + carry1_prop);
+        const d3_with_carry, const carry3_prop = @subWithOverflow(d3, carry2 + carry2_prop);
+        const final_carry = carry3 + carry3_prop;
+
+        // If there's a final borrow, self < other
+        if (final_carry != 0) {
+            return -1;
+        }
+
+        // If all difference limbs are zero, self == other
+        if ((d0 | d1_with_carry | d2_with_carry | d3_with_carry) == 0) {
+            return 0;
+        }
+
+        // Otherwise self > other
+        return 1;
+    }
+
+    /// Compares self with a u64 value and returns:
+    /// -1 if self < x
+    ///  0 if self == x
+    /// +1 if self > x
+    pub fn cmpU64(self: U256, x: u64) i8 {
+        // If any upper limb is non-zero, self > x
+        if ((self.limbs[1] | self.limbs[2] | self.limbs[3]) != 0) {
+            return 1;
+        }
+
+        // Compare lower limb
+        if (self.limbs[0] > x) {
+            return 1;
+        }
+        if (self.limbs[0] == x) {
+            return 0;
+        }
+        return -1;
+    }
+
+    /// Returns true if self < n (where n is a u64).
+    pub fn ltU64(self: U256, n: u64) bool {
+        return self.limbs[0] < n and ((self.limbs[1] | self.limbs[2] | self.limbs[3]) == 0);
+    }
+
+    /// Returns true if self > n (where n is a u64).
+    pub fn gtU64(self: U256, n: u64) bool {
+        return self.limbs[0] > n or ((self.limbs[1] | self.limbs[2] | self.limbs[3]) != 0);
+    }
+
+    /// Compares self with a big integer and returns:
+    /// -1 if self < x
+    ///  0 if self == x
+    /// +1 if self > x
+    pub fn cmpBig(self: U256, x: std.math.big.int.Const) i8 {
+        // If x is negative, self (which is unsigned) is always greater
+        if (!x.positive) {
+            return 1;
+        }
+
+        // Convert x to U256
+        var y = U256.initZero();
+        const overflow = y.setFromBig(x);
+
+        // If x overflows 256 bits, then x > self
+        if (overflow) {
+            return -1;
+        }
+
+        // Both fit in 256 bits, do normal comparison
+        return self.cmp(y);
     }
 
     /// Returns true if self can fit in a u64 (all upper limbs are zero).
@@ -1049,7 +1327,7 @@ pub const U256 = struct {
 
         // If m is a full 4-word modulus, use Barrett reduction with reciprocal
         if (m.limbs[3] != 0) {
-            const mu = reciprocal(m);
+            const mu = modular.reciprocal(m);
             return self.reduce4(&p, m, &mu);
         }
 
@@ -1181,1161 +1459,236 @@ pub const U256 = struct {
         return self;
     }
 
-    /// Computes a 320-bit value representing 1/m
-    ///
-    /// Notes:
-    /// - specialized for m[3] != 0, hence limited to 2^192 <= m < 2^256
-    /// - returns zero if m[3] == 0
-    /// - starts with a 32-bit division, refines with newton-raphson iterations
-    ///
-    /// TODO: This function has compilation issues with variable scoping.
-    /// The implementation is ~1150 lines with hundreds of temp variable reuses.
-    /// Needs refactoring to handle Zig's stricter variable scoping rules.
-    pub fn reciprocal(m: U256) [5]u64 {
-        const mu = [_]u64{0} ** 5;
+    /// Shifts self left by n bits in place (self = self << n) and returns self.
+    pub fn ilsh(self: *U256, n: u32) *U256 {
+        const self_copy = self.*;
+        return self.lsh(self_copy, n);
+    }
 
-        if (m.limbs[3] == 0) {
-            return mu;
+    /// Helper: shifts x right by 64 bits and stores in self.
+    fn rsh64(self: *U256, x: U256) void {
+        self.limbs[0] = x.limbs[1];
+        self.limbs[1] = x.limbs[2];
+        self.limbs[2] = x.limbs[3];
+        self.limbs[3] = 0;
+    }
+
+    /// Helper: shifts x right by 128 bits and stores in self.
+    fn rsh128(self: *U256, x: U256) void {
+        self.limbs[0] = x.limbs[2];
+        self.limbs[1] = x.limbs[3];
+        self.limbs[2] = 0;
+        self.limbs[3] = 0;
+    }
+
+    /// Helper: shifts x right by 192 bits and stores in self.
+    fn rsh192(self: *U256, x: U256) void {
+        self.limbs[0] = x.limbs[3];
+        self.limbs[1] = 0;
+        self.limbs[2] = 0;
+        self.limbs[3] = 0;
+    }
+
+    /// Sets self to x >> n (right shift by n bits) and returns self.
+    pub fn rsh(self: *U256, x: U256, n: u32) *U256 {
+        if (n == 0) {
+            return self.set(x);
         }
 
-        // TODO: Full Newton-Raphson implementation commented out due to compilation errors
-        // See CLAUDE.MD for details
-        return mu;
+        if (n >= 256) {
+            return self.clear();
+        }
 
-        //         // const s = @clz(m.limbs[3]); // Leading zeros
-        //         // const p: i32 = 255 - @as(i32, s); // floor(log_2(m)), m>0
-        // 
-        //         // 0 or a power of 2?
-        //         // Check if at least one bit is set in m[2], m[1] or m[0],
-        //         // or at least two bits in m[3]
-        //         if (m.limbs[0] | m.limbs[1] | m.limbs[2] | (m.limbs[3] & (m.limbs[3] -% 1)) == 0) {
-        //             mu[4] = ~@as(u64, 0) >> @intCast(p & 63);
-        //             mu[3] = ~@as(u64, 0);
-        //             mu[2] = ~@as(u64, 0);
-        //             mu[1] = ~@as(u64, 0);
-        //             mu[0] = ~@as(u64, 0);
-        //             return mu;
-        //         }
-        // 
-        //         // Maximise division precision by left-aligning divisor
-        //         var y = U256.initZero(); // left-aligned copy of m
-        //         _ = y.lsh(m, @intCast(s)); // 1/2 < y < 1
-        // 
-        //         // Extract most significant 32 bits
-        //         const yh: u32 = @truncate(y.limbs[3] >> 32);
-        // 
-        //         var r0: u32 = 0;
-        //         if (yh == 0x80000000) { // Avoid overflow in division
-        //             r0 = 0xffffffff;
-        //         } else {
-        //             // Compute 2^63 / yh (32-bit division)
-        //             r0 = @truncate(@as(u64, 0x8000000000000000) / @as(u64, yh));
-        //         }
-        // 
-        //         // First iteration: 32 -> 64
-        //         var t1: u64 = r0; // 2^31/y
-        //         t1 *= t1; // 2^62/y^2
-        //         const mul1 = @mulWithOverflow(t1, y.limbs[3]);
-        //         t1 = mul1[1]; // 2^62/y^2 * 2^64/y / 2^64 = 2^62/y
-        // 
-        //         var r1 = @as(u64, r0) << 32; // 2^63/y
-        //         r1 -%= t1; // 2^63/y - 2^62/y = 2^62/y
-        //         r1 *%= 2; // 2^63/y
-        // 
-        //         if ((r1 | (y.limbs[3] << 1)) == 0) {
-        //             r1 = ~@as(u64, 0);
-        //         }
-        // 
-        //         // Second iteration: 64 -> 128
-        //         // square: 2^126/y^2
-        //         const mul2 = @mulWithOverflow(r1, r1);
-        //         const a2h = mul2[1];
-        //         const a2l = mul2[0];
-        // 
-        //         // multiply by y: e2h:e2l:b2h = 2^126/y^2 * 2^128/y / 2^128 = 2^126/y
-        //         const mulb = @mulWithOverflow(a2l, y.limbs[2]);
-        //         var b2h = mulb[1];
-        // 
-        //         const mulc = @mulWithOverflow(a2l, y.limbs[3]);
-        //         const c2h = mulc[1];
-        //         const c2l = mulc[0];
-        // 
-        //         const muld = @mulWithOverflow(a2h, y.limbs[2]);
-        //         const d2h = muld[1];
-        //         const d2l = muld[0];
-        // 
-        //         const mule = @mulWithOverflow(a2h, y.limbs[3]);
-        //         var e2h = mule[1];
-        //         var e2l = mule[0];
-        // 
-        //         const add2_1 = @addWithOverflow(b2h, c2l);
-        //         b2h = add2_1[0];
-        //         var carry: u64 = @as(u64, add2_1[1]);
-        // 
-        //         const add2_2 = @addWithOverflow(e2l, c2h);
-        //         e2l = add2_2[0];
-        //         carry |= @as(u64, add2_2[1]);
-        // 
-        //         const add2_3 = @addWithOverflow(e2l, carry);
-        //         e2l = add2_3[0];
-        //         carry = @as(u64, add2_3[1]);
-        // 
-        //         e2h +%= carry;
-        // 
-        //         const add2_4 = @addWithOverflow(b2h, d2l);
-        //         carry = @as(u64, add2_4[1]);
-        // 
-        //         const add2_5 = @addWithOverflow(e2l, d2h);
-        //         e2l = add2_5[0];
-        //         carry |= @as(u64, add2_5[1]);
-        // 
-        //         const add2_6 = @addWithOverflow(e2l, carry);
-        //         e2l = add2_6[0];
-        //         carry = @as(u64, add2_6[1]);
-        // 
-        //         e2h +%= carry;
-        // 
-        //         // subtract: t2h:t2l = 2^127/y - 2^126/y = 2^126/y
-        //         var sub1 = @subWithOverflow(0, e2l);
-        //         const t2l = sub1[0];
-        //         var borrow = sub1[1];
-        // 
-        //         sub1 = @subWithOverflow(r1, e2h);
-        //         const t2h = sub1[0] -% borrow;
-        // 
-        //         // double: r2h:r2l = 2^127/y
-        //         add1 = @addWithOverflow(t2l, t2l);
-        //         var r2l = add1[0];
-        //         carry = add1[1];
-        // 
-        //         add1 = @addWithOverflow(t2h, t2h);
-        //         var r2h = add1[0] +% carry;
-        // 
-        //         if ((r2h | r2l | (y.limbs[3] << 1)) == 0) {
-        //             r2h = ~@as(u64, 0);
-        //             r2l = ~@as(u64, 0);
-        //         }
-        // 
-        //         // Third iteration: 128 -> 192
-        //         // square r2 (keep 256 bits): 2^190/y^2
-        //         const mul3a = @mulWithOverflow(r2l, r2l);
-        //         var a3h = mul3a[1];
-        //         const a3l = mul3a[0];
-        // 
-        //         const mul3b = @mulWithOverflow(r2l, r2h);
-        //         const b3h = mul3b[1];
-        //         const b3l = mul3b[0];
-        // 
-        //         const mul3c = @mulWithOverflow(r2h, r2h);
-        //         var c3h = mul3c[1];
-        //         var c3l = mul3c[0];
-        // 
-        //         add1 = @addWithOverflow(a3h, b3l);
-        //         a3h = add1[0];
-        //         carry = add1[1];
-        // 
-        //         add1 = @addWithOverflow(c3l, b3h);
-        //         c3l = add1[0];
-        //         carry |= add1[1];
-        // 
-        //         add1 = @addWithOverflow(c3l, carry);
-        //         c3l = add1[0];
-        //         carry = add1[1];
-        // 
-        //         add1 = @addWithOverflow(c3h, 0);
-        //         c3h = add1[0] +% carry;
-        // 
-        //         add1 = @addWithOverflow(a3h, b3l);
-        //         a3h = add1[0];
-        //         carry = add1[1];
-        // 
-        //         add1 = @addWithOverflow(c3l, b3h);
-        //         c3l = add1[0];
-        //         carry |= add1[1];
-        // 
-        //         add1 = @addWithOverflow(c3l, carry);
-        //         c3l = add1[0];
-        //         carry = add1[1];
-        // 
-        //         c3h +%= carry;
-        // 
-        //         // multiply by y: q = 2^190/y^2 * 2^192/y / 2^192 = 2^190/y
-        //         const x0 = a3l;
-        //         const x1 = a3h;
-        //         const x2 = c3l;
-        //         const x3 = c3h;
-        // 
-        //         var q0: u64 = 0;
-        //         var q1: u64 = 0;
-        //         var q2: u64 = 0;
-        //         var q3: u64 = 0;
-        //         var q4: u64 = 0;
-        //         var t0: u64 = 0;
-        // 
-        //         const mulq0 = @mulWithOverflow(x2, y.limbs[0]);
-        //         q0 = mulq0[1];
-        // 
-        //         const mulq1 = @mulWithOverflow(x3, y.limbs[0]);
-        //         q1 = mulq1[1];
-        //         t0 = mulq1[0];
-        //         add1 = @addWithOverflow(q0, t0);
-        //         q0 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(q1, 0);
-        //         q1 = add1[0] +% carry;
-        // 
-        //         const mult1_1 = @mulWithOverflow(x1, y.limbs[1]);
-        //         t1 = mult1_1[1];
-        //         add1 = @addWithOverflow(q0, t1);
-        //         q0 = add1[0];
-        //         carry = add1[1];
-        // 
-        //         const mulq2 = @mulWithOverflow(x3, y.limbs[1]);
-        //         q2 = mulq2[1];
-        //         t0 = mulq2[0];
-        //         add1 = @addWithOverflow(q1, t0);
-        //         q1 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(q1, carry);
-        //         q1 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(q2, 0);
-        //         q2 = add1[0] +% carry;
-        // 
-        //         const mult1_2 = @mulWithOverflow(x2, y.limbs[1]);
-        //         t1 = mult1_2[1];
-        //         t0 = mult1_2[0];
-        //         add1 = @addWithOverflow(q0, t0);
-        //         q0 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(q1, t1);
-        //         q1 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(q1, carry);
-        //         q1 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(q2, 0);
-        //         q2 = add1[0] +% carry;
-        // 
-        //         const mult1_3 = @mulWithOverflow(x1, y.limbs[2]);
-        //         t1 = mult1_3[1];
-        //         t0 = mult1_3[0];
-        //         add1 = @addWithOverflow(q0, t0);
-        //         q0 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(q1, t1);
-        //         q1 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(q1, carry);
-        //         q1 = add1[0];
-        //         carry = add1[1];
-        // 
-        //         const mulq3 = @mulWithOverflow(x3, y.limbs[2]);
-        //         q3 = mulq3[1];
-        //         t0 = mulq3[0];
-        //         add1 = @addWithOverflow(q2, t0);
-        //         q2 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(q2, carry);
-        //         q2 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(q3, 0);
-        //         q3 = add1[0] +% carry;
-        // 
-        //         const mult1_4 = @mulWithOverflow(x0, y.limbs[2]);
-        //         t1 = mult1_4[1];
-        //         add1 = @addWithOverflow(q0, t1);
-        //         q0 = add1[0];
-        //         carry = add1[1];
-        // 
-        //         const mult1_5 = @mulWithOverflow(x2, y.limbs[2]);
-        //         t1 = mult1_5[1];
-        //         t0 = mult1_5[0];
-        //         add1 = @addWithOverflow(q1, t0);
-        //         q1 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(q1, carry);
-        //         q1 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(q2, t1);
-        //         q2 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(q2, carry);
-        //         q2 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(q3, 0);
-        //         q3 = add1[0] +% carry;
-        // 
-        //         const mult1_6 = @mulWithOverflow(x1, y.limbs[3]);
-        //         t1 = mult1_6[1];
-        //         t0 = mult1_6[0];
-        //         add1 = @addWithOverflow(q1, t0);
-        //         q1 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(q2, t1);
-        //         q2 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(q2, carry);
-        //         q2 = add1[0];
-        //         carry = add1[1];
-        // 
-        //         const mulq4 = @mulWithOverflow(x3, y.limbs[3]);
-        //         q4 = mulq4[1];
-        //         t0 = mulq4[0];
-        //         add1 = @addWithOverflow(q3, t0);
-        //         q3 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(q3, carry);
-        //         q3 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(q4, 0);
-        //         q4 = add1[0] +% carry;
-        // 
-        //         const mult1_7 = @mulWithOverflow(x0, y.limbs[3]);
-        //         t1 = mult1_7[1];
-        //         t0 = mult1_7[0];
-        //         add1 = @addWithOverflow(q0, t0);
-        //         q0 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(q1, t1);
-        //         q1 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(q1, carry);
-        //         q1 = add1[0];
-        //         carry = add1[1];
-        // 
-        //         const mult1_8 = @mulWithOverflow(x2, y.limbs[3]);
-        //         t1 = mult1_8[1];
-        //         t0 = mult1_8[0];
-        //         add1 = @addWithOverflow(q2, t0);
-        //         q2 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(q2, carry);
-        //         q2 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(q3, t1);
-        //         q3 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(q3, carry);
-        //         q3 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(q4, 0);
-        //         q4 = add1[0] +% carry;
-        // 
-        //         // subtract: t3 = 2^191/y - 2^190/y = 2^190/y
-        //         sub1 = @subWithOverflow(0, q0);
-        //         borrow = sub1[1];
-        //         sub1 = @subWithOverflow(0, q1);
-        //         borrow |= sub1[1];
-        //         sub1 = @subWithOverflow(0, q2);
-        //         var t3l = sub1[0];
-        //         borrow |= sub1[1];
-        //         sub1 = @subWithOverflow(t3l, borrow);
-        //         t3l = sub1[0];
-        //         borrow = sub1[1];
-        // 
-        //         sub1 = @subWithOverflow(r2l, q3);
-        //         var t3m = sub1[0];
-        //         borrow |= sub1[1];
-        //         sub1 = @subWithOverflow(t3m, borrow);
-        //         t3m = sub1[0];
-        //         borrow = sub1[1];
-        // 
-        //         sub1 = @subWithOverflow(r2h, q4);
-        //         var t3h = sub1[0];
-        //         borrow |= sub1[1];
-        //         t3h -%= borrow;
-        // 
-        //         // double: r3 = 2^191/y
-        //         add1 = @addWithOverflow(t3l, t3l);
-        //         const r3l = add1[0];
-        //         carry = add1[1];
-        // 
-        //         add1 = @addWithOverflow(t3m, t3m);
-        //         var r3m = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(r3m, carry);
-        //         r3m = add1[0];
-        //         carry = add1[1];
-        // 
-        //         add1 = @addWithOverflow(t3h, t3h);
-        //         var r3h = add1[0];
-        //         carry |= add1[1];
-        //         r3h +%= carry;
-        // 
-        //         // Fourth iteration: 192 -> 320
-        //         // square r3
-        //         const mul4a = @mulWithOverflow(r3l, r3l);
-        //         var a4h = mul4a[1];
-        //         const a4l = mul4a[0];
-        // 
-        //         const mul4b = @mulWithOverflow(r3l, r3m);
-        //         var b4h = mul4b[1];
-        //         const b4l = mul4b[0];
-        // 
-        //         const mul4c = @mulWithOverflow(r3l, r3h);
-        //         const c4h = mul4c[1];
-        //         const c4l = mul4c[0];
-        // 
-        //         const mul4d = @mulWithOverflow(r3m, r3m);
-        //         var d4h = mul4d[1];
-        //         var d4l = mul4d[0];
-        // 
-        //         const mul4e = @mulWithOverflow(r3m, r3h);
-        //         var e4h = mul4e[1];
-        //         var e4l = mul4e[0];
-        // 
-        //         const mul4f = @mulWithOverflow(r3h, r3h);
-        //         var f4h = mul4f[1];
-        //         var f4l = mul4f[0];
-        // 
-        //         add1 = @addWithOverflow(b4h, c4l);
-        //         b4h = add1[0];
-        //         carry = add1[1];
-        // 
-        //         add1 = @addWithOverflow(e4l, c4h);
-        //         e4l = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(e4l, carry);
-        //         e4l = add1[0];
-        //         carry = add1[1];
-        // 
-        //         add1 = @addWithOverflow(e4h, 0);
-        //         e4h = add1[0] +% carry;
-        // 
-        //         add1 = @addWithOverflow(a4h, b4l);
-        //         a4h = add1[0];
-        //         carry = add1[1];
-        // 
-        //         add1 = @addWithOverflow(d4l, b4h);
-        //         d4l = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(d4l, carry);
-        //         d4l = add1[0];
-        //         carry = add1[1];
-        // 
-        //         add1 = @addWithOverflow(d4h, e4l);
-        //         d4h = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(d4h, carry);
-        //         d4h = add1[0];
-        //         carry = add1[1];
-        // 
-        //         add1 = @addWithOverflow(f4l, e4h);
-        //         f4l = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(f4l, carry);
-        //         f4l = add1[0];
-        //         carry = add1[1];
-        // 
-        //         add1 = @addWithOverflow(f4h, 0);
-        //         f4h = add1[0] +% carry;
-        // 
-        //         add1 = @addWithOverflow(a4h, b4l);
-        //         a4h = add1[0];
-        //         carry = add1[1];
-        // 
-        //         add1 = @addWithOverflow(d4l, b4h);
-        //         d4l = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(d4l, carry);
-        //         d4l = add1[0];
-        //         carry = add1[1];
-        // 
-        //         add1 = @addWithOverflow(d4h, e4l);
-        //         d4h = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(d4h, carry);
-        //         d4h = add1[0];
-        //         carry = add1[1];
-        // 
-        //         add1 = @addWithOverflow(f4l, e4h);
-        //         f4l = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(f4l, carry);
-        //         f4l = add1[0];
-        //         carry = add1[1];
-        // 
-        //         f4h +%= carry;
-        // 
-        //         // multiply by y
-        //         var x1_iter4: u64 = 0;
-        //         var x2_iter4: u64 = 0;
-        //         var x3_iter4: u64 = 0;
-        //         var x4_iter4: u64 = 0;
-        //         var x5_iter4: u64 = 0;
-        //         var x6_iter4: u64 = 0;
-        // 
-        //         const mulx1 = @mulWithOverflow(d4h, y.limbs[0]);
-        //         x1_iter4 = mulx1[1];
-        //         var x0_iter4 = mulx1[0];
-        // 
-        //         const mulx3 = @mulWithOverflow(f4h, y.limbs[0]);
-        //         x3_iter4 = mulx3[1];
-        //         x2_iter4 = mulx3[0];
-        // 
-        //         const mult_fl_y0 = @mulWithOverflow(f4l, y.limbs[0]);
-        //         t1 = mult_fl_y0[1];
-        //         t0 = mult_fl_y0[0];
-        //         add1 = @addWithOverflow(x1_iter4, t0);
-        //         x1_iter4 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(x2_iter4, t1);
-        //         x2_iter4 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(x2_iter4, carry);
-        //         x2_iter4 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(x3_iter4, 0);
-        //         x3_iter4 = add1[0] +% carry;
-        // 
-        //         const mult_dh_y1 = @mulWithOverflow(d4h, y.limbs[1]);
-        //         t1 = mult_dh_y1[1];
-        //         t0 = mult_dh_y1[0];
-        //         add1 = @addWithOverflow(x1_iter4, t0);
-        //         x1_iter4 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(x2_iter4, t1);
-        //         x2_iter4 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(x2_iter4, carry);
-        //         x2_iter4 = add1[0];
-        //         carry = add1[1];
-        // 
-        //         const mulx4 = @mulWithOverflow(f4h, y.limbs[1]);
-        //         x4_iter4 = mulx4[1];
-        //         t0 = mulx4[0];
-        //         add1 = @addWithOverflow(x3_iter4, t0);
-        //         x3_iter4 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(x3_iter4, carry);
-        //         x3_iter4 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(x4_iter4, 0);
-        //         x4_iter4 = add1[0] +% carry;
-        // 
-        //         const mult_dl_y1 = @mulWithOverflow(d4l, y.limbs[1]);
-        //         t1 = mult_dl_y1[1];
-        //         t0 = mult_dl_y1[0];
-        //         add1 = @addWithOverflow(x0_iter4, t0);
-        //         x0_iter4 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(x1_iter4, t1);
-        //         x1_iter4 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(x1_iter4, carry);
-        //         x1_iter4 = add1[0];
-        //         carry = add1[1];
-        // 
-        //         const mult_fl_y1 = @mulWithOverflow(f4l, y.limbs[1]);
-        //         t1 = mult_fl_y1[1];
-        //         t0 = mult_fl_y1[0];
-        //         add1 = @addWithOverflow(x2_iter4, t0);
-        //         x2_iter4 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(x2_iter4, carry);
-        //         x2_iter4 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(x3_iter4, t1);
-        //         x3_iter4 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(x3_iter4, carry);
-        //         x3_iter4 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(x4_iter4, 0);
-        //         x4_iter4 = add1[0] +% carry;
-        // 
-        //         const mult_ah_y2 = @mulWithOverflow(a4h, y.limbs[2]);
-        //         t1 = mult_ah_y2[1];
-        //         t0 = mult_ah_y2[0];
-        //         add1 = @addWithOverflow(x0_iter4, t0);
-        //         x0_iter4 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(x1_iter4, t1);
-        //         x1_iter4 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(x1_iter4, carry);
-        //         x1_iter4 = add1[0];
-        //         carry = add1[1];
-        // 
-        //         const mult_dh_y2 = @mulWithOverflow(d4h, y.limbs[2]);
-        //         t1 = mult_dh_y2[1];
-        //         t0 = mult_dh_y2[0];
-        //         add1 = @addWithOverflow(x2_iter4, t0);
-        //         x2_iter4 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(x2_iter4, carry);
-        //         x2_iter4 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(x3_iter4, t1);
-        //         x3_iter4 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(x3_iter4, carry);
-        //         x3_iter4 = add1[0];
-        //         carry = add1[1];
-        // 
-        //         const mulx5 = @mulWithOverflow(f4h, y.limbs[2]);
-        //         x5_iter4 = mulx5[1];
-        //         t0 = mulx5[0];
-        //         add1 = @addWithOverflow(x4_iter4, t0);
-        //         x4_iter4 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(x4_iter4, carry);
-        //         x4_iter4 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(x5_iter4, 0);
-        //         x5_iter4 = add1[0] +% carry;
-        // 
-        //         const mult_dl_y2 = @mulWithOverflow(d4l, y.limbs[2]);
-        //         t1 = mult_dl_y2[1];
-        //         t0 = mult_dl_y2[0];
-        //         add1 = @addWithOverflow(x1_iter4, t0);
-        //         x1_iter4 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(x2_iter4, t1);
-        //         x2_iter4 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(x2_iter4, carry);
-        //         x2_iter4 = add1[0];
-        //         carry = add1[1];
-        // 
-        //         const mult_fl_y2 = @mulWithOverflow(f4l, y.limbs[2]);
-        //         t1 = mult_fl_y2[1];
-        //         t0 = mult_fl_y2[0];
-        //         add1 = @addWithOverflow(x3_iter4, t0);
-        //         x3_iter4 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(x3_iter4, carry);
-        //         x3_iter4 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(x4_iter4, t1);
-        //         x4_iter4 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(x4_iter4, carry);
-        //         x4_iter4 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(x5_iter4, 0);
-        //         x5_iter4 = add1[0] +% carry;
-        // 
-        //         const mult_ah_y3 = @mulWithOverflow(a4h, y.limbs[3]);
-        //         t1 = mult_ah_y3[1];
-        //         t0 = mult_ah_y3[0];
-        //         add1 = @addWithOverflow(x1_iter4, t0);
-        //         x1_iter4 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(x2_iter4, t1);
-        //         x2_iter4 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(x2_iter4, carry);
-        //         x2_iter4 = add1[0];
-        //         carry = add1[1];
-        // 
-        //         const mult_dh_y3 = @mulWithOverflow(d4h, y.limbs[3]);
-        //         t1 = mult_dh_y3[1];
-        //         t0 = mult_dh_y3[0];
-        //         add1 = @addWithOverflow(x3_iter4, t0);
-        //         x3_iter4 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(x3_iter4, carry);
-        //         x3_iter4 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(x4_iter4, t1);
-        //         x4_iter4 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(x4_iter4, carry);
-        //         x4_iter4 = add1[0];
-        //         carry = add1[1];
-        // 
-        //         const mulx6 = @mulWithOverflow(f4h, y.limbs[3]);
-        //         x6_iter4 = mulx6[1];
-        //         t0 = mulx6[0];
-        //         add1 = @addWithOverflow(x5_iter4, t0);
-        //         x5_iter4 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(x5_iter4, carry);
-        //         x5_iter4 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(x6_iter4, 0);
-        //         x6_iter4 = add1[0] +% carry;
-        // 
-        //         const mult_al_y3 = @mulWithOverflow(a4l, y.limbs[3]);
-        //         t1 = mult_al_y3[1];
-        //         t0 = mult_al_y3[0];
-        //         add1 = @addWithOverflow(x0_iter4, t0);
-        //         x0_iter4 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(x1_iter4, t1);
-        //         x1_iter4 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(x1_iter4, carry);
-        //         x1_iter4 = add1[0];
-        //         carry = add1[1];
-        // 
-        //         const mult_dl_y3 = @mulWithOverflow(d4l, y.limbs[3]);
-        //         t1 = mult_dl_y3[1];
-        //         t0 = mult_dl_y3[0];
-        //         add1 = @addWithOverflow(x2_iter4, t0);
-        //         x2_iter4 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(x2_iter4, carry);
-        //         x2_iter4 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(x3_iter4, t1);
-        //         x3_iter4 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(x3_iter4, carry);
-        //         x3_iter4 = add1[0];
-        //         carry = add1[1];
-        // 
-        //         const mult_fl_y3 = @mulWithOverflow(f4l, y.limbs[3]);
-        //         t1 = mult_fl_y3[1];
-        //         t0 = mult_fl_y3[0];
-        //         add1 = @addWithOverflow(x4_iter4, t0);
-        //         x4_iter4 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(x4_iter4, carry);
-        //         x4_iter4 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(x5_iter4, t1);
-        //         x5_iter4 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(x5_iter4, carry);
-        //         x5_iter4 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(x6_iter4, 0);
-        //         x6_iter4 = add1[0] +% carry;
-        // 
-        //         // subtract
-        //         sub1 = @subWithOverflow(0, x0_iter4);
-        //         borrow = sub1[1];
-        //         sub1 = @subWithOverflow(0, x1_iter4);
-        //         borrow |= sub1[1];
-        //         sub1 = @subWithOverflow(0, x2_iter4);
-        //         var r4l = sub1[0];
-        //         borrow |= sub1[1];
-        //         sub1 = @subWithOverflow(r4l, borrow);
-        //         r4l = sub1[0];
-        //         borrow = sub1[1];
-        // 
-        //         sub1 = @subWithOverflow(0, x3_iter4);
-        //         var r4k = sub1[0];
-        //         borrow |= sub1[1];
-        //         sub1 = @subWithOverflow(r4k, borrow);
-        //         r4k = sub1[0];
-        //         borrow = sub1[1];
-        // 
-        //         sub1 = @subWithOverflow(r3l, x4_iter4);
-        //         var r4j = sub1[0];
-        //         borrow |= sub1[1];
-        //         sub1 = @subWithOverflow(r4j, borrow);
-        //         r4j = sub1[0];
-        //         borrow = sub1[1];
-        // 
-        //         sub1 = @subWithOverflow(r3m, x5_iter4);
-        //         var r4i = sub1[0];
-        //         borrow |= sub1[1];
-        //         sub1 = @subWithOverflow(r4i, borrow);
-        //         r4i = sub1[0];
-        //         borrow = sub1[1];
-        // 
-        //         sub1 = @subWithOverflow(r3h, x6_iter4);
-        //         var r4h = sub1[0];
-        //         borrow |= sub1[1];
-        //         r4h -%= borrow;
-        // 
-        //         // Multiply candidate for 1/4y by y, with full precision
-        //         var x0_final = r4l;
-        //         var x1_final = r4k;
-        //         var x2_final = r4j;
-        //         var x3_final = r4i;
-        //         var x4_final = r4h;
-        // 
-        //         const mulq_x0y0 = @mulWithOverflow(x0_final, y.limbs[0]);
-        //         q1 = mulq_x0y0[1];
-        //         q0 = mulq_x0y0[0];
-        // 
-        //         const mulq_x2y0 = @mulWithOverflow(x2_final, y.limbs[0]);
-        //         q3 = mulq_x2y0[1];
-        //         q2 = mulq_x2y0[0];
-        // 
-        //         const mulq_x4y0 = @mulWithOverflow(x4_final, y.limbs[0]);
-        //         var q5 = mulq_x4y0[1];
-        //         q4 = mulq_x4y0[0];
-        // 
-        //         const mulq_x1y0 = @mulWithOverflow(x1_final, y.limbs[0]);
-        //         t1 = mulq_x1y0[1];
-        //         t0 = mulq_x1y0[0];
-        //         add1 = @addWithOverflow(q1, t0);
-        //         q1 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(q2, t1);
-        //         q2 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(q2, carry);
-        //         q2 = add1[0];
-        //         carry = add1[1];
-        // 
-        //         const mulq_x3y0 = @mulWithOverflow(x3_final, y.limbs[0]);
-        //         t1 = mulq_x3y0[1];
-        //         t0 = mulq_x3y0[0];
-        //         add1 = @addWithOverflow(q3, t0);
-        //         q3 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(q3, carry);
-        //         q3 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(q4, t1);
-        //         q4 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(q4, carry);
-        //         q4 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(q5, 0);
-        //         q5 = add1[0] +% carry;
-        // 
-        //         const mulq_x0y1 = @mulWithOverflow(x0_final, y.limbs[1]);
-        //         t1 = mulq_x0y1[1];
-        //         t0 = mulq_x0y1[0];
-        //         add1 = @addWithOverflow(q1, t0);
-        //         q1 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(q2, t1);
-        //         q2 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(q2, carry);
-        //         q2 = add1[0];
-        //         carry = add1[1];
-        // 
-        //         const mulq_x2y1 = @mulWithOverflow(x2_final, y.limbs[1]);
-        //         t1 = mulq_x2y1[1];
-        //         t0 = mulq_x2y1[0];
-        //         add1 = @addWithOverflow(q3, t0);
-        //         q3 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(q3, carry);
-        //         q3 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(q4, t1);
-        //         q4 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(q4, carry);
-        //         q4 = add1[0];
-        //         carry = add1[1];
-        // 
-        //         const mulq_x4y1 = @mulWithOverflow(x4_final, y.limbs[1]);
-        //         var q6 = mulq_x4y1[1];
-        //         t0 = mulq_x4y1[0];
-        //         add1 = @addWithOverflow(q5, t0);
-        //         q5 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(q5, carry);
-        //         q5 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(q6, 0);
-        //         q6 = add1[0] +% carry;
-        // 
-        //         const mulq_x1y1 = @mulWithOverflow(x1_final, y.limbs[1]);
-        //         t1 = mulq_x1y1[1];
-        //         t0 = mulq_x1y1[0];
-        //         add1 = @addWithOverflow(q2, t0);
-        //         q2 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(q3, t1);
-        //         q3 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(q3, carry);
-        //         q3 = add1[0];
-        //         carry = add1[1];
-        // 
-        //         const mulq_x3y1 = @mulWithOverflow(x3_final, y.limbs[1]);
-        //         t1 = mulq_x3y1[1];
-        //         t0 = mulq_x3y1[0];
-        //         add1 = @addWithOverflow(q4, t0);
-        //         q4 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(q4, carry);
-        //         q4 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(q5, t1);
-        //         q5 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(q5, carry);
-        //         q5 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(q6, 0);
-        //         q6 = add1[0] +% carry;
-        // 
-        //         const mulq_x0y2 = @mulWithOverflow(x0_final, y.limbs[2]);
-        //         t1 = mulq_x0y2[1];
-        //         t0 = mulq_x0y2[0];
-        //         add1 = @addWithOverflow(q2, t0);
-        //         q2 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(q3, t1);
-        //         q3 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(q3, carry);
-        //         q3 = add1[0];
-        //         carry = add1[1];
-        // 
-        //         const mulq_x2y2 = @mulWithOverflow(x2_final, y.limbs[2]);
-        //         t1 = mulq_x2y2[1];
-        //         t0 = mulq_x2y2[0];
-        //         add1 = @addWithOverflow(q4, t0);
-        //         q4 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(q4, carry);
-        //         q4 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(q5, t1);
-        //         q5 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(q5, carry);
-        //         q5 = add1[0];
-        //         carry = add1[1];
-        // 
-        //         const mulq_x4y2 = @mulWithOverflow(x4_final, y.limbs[2]);
-        //         var q7 = mulq_x4y2[1];
-        //         t0 = mulq_x4y2[0];
-        //         add1 = @addWithOverflow(q6, t0);
-        //         q6 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(q6, carry);
-        //         q6 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(q7, 0);
-        //         q7 = add1[0] +% carry;
-        // 
-        //         const mulq_x1y2 = @mulWithOverflow(x1_final, y.limbs[2]);
-        //         t1 = mulq_x1y2[1];
-        //         t0 = mulq_x1y2[0];
-        //         add1 = @addWithOverflow(q3, t0);
-        //         q3 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(q4, t1);
-        //         q4 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(q4, carry);
-        //         q4 = add1[0];
-        //         carry = add1[1];
-        // 
-        //         const mulq_x3y2 = @mulWithOverflow(x3_final, y.limbs[2]);
-        //         t1 = mulq_x3y2[1];
-        //         t0 = mulq_x3y2[0];
-        //         add1 = @addWithOverflow(q5, t0);
-        //         q5 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(q5, carry);
-        //         q5 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(q6, t1);
-        //         q6 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(q6, carry);
-        //         q6 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(q7, 0);
-        //         q7 = add1[0] +% carry;
-        // 
-        //         const mulq_x0y3 = @mulWithOverflow(x0_final, y.limbs[3]);
-        //         t1 = mulq_x0y3[1];
-        //         t0 = mulq_x0y3[0];
-        //         add1 = @addWithOverflow(q3, t0);
-        //         q3 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(q4, t1);
-        //         q4 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(q4, carry);
-        //         q4 = add1[0];
-        //         carry = add1[1];
-        // 
-        //         const mulq_x2y3 = @mulWithOverflow(x2_final, y.limbs[3]);
-        //         t1 = mulq_x2y3[1];
-        //         t0 = mulq_x2y3[0];
-        //         add1 = @addWithOverflow(q5, t0);
-        //         q5 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(q5, carry);
-        //         q5 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(q6, t1);
-        //         q6 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(q6, carry);
-        //         q6 = add1[0];
-        //         carry = add1[1];
-        // 
-        //         const mulq_x4y3 = @mulWithOverflow(x4_final, y.limbs[3]);
-        //         var q8 = mulq_x4y3[1];
-        //         t0 = mulq_x4y3[0];
-        //         add1 = @addWithOverflow(q7, t0);
-        //         q7 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(q7, carry);
-        //         q7 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(q8, 0);
-        //         q8 = add1[0] +% carry;
-        // 
-        //         const mulq_x1y3 = @mulWithOverflow(x1_final, y.limbs[3]);
-        //         t1 = mulq_x1y3[1];
-        //         t0 = mulq_x1y3[0];
-        //         add1 = @addWithOverflow(q4, t0);
-        //         q4 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(q5, t1);
-        //         q5 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(q5, carry);
-        //         q5 = add1[0];
-        //         carry = add1[1];
-        // 
-        //         const mulq_x3y3 = @mulWithOverflow(x3_final, y.limbs[3]);
-        //         t1 = mulq_x3y3[1];
-        //         t0 = mulq_x3y3[0];
-        //         add1 = @addWithOverflow(q6, t0);
-        //         q6 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(q6, carry);
-        //         q6 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(q7, t1);
-        //         q7 = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(q7, carry);
-        //         q7 = add1[0];
-        //         carry = add1[1];
-        //         add1 = @addWithOverflow(q8, 0);
-        //         q8 = add1[0] +% carry;
-        // 
-        //         // Final adjustment
-        //         // subtract q from 1/4
-        //         sub1 = @subWithOverflow(0, q0);
-        //         borrow = sub1[1];
-        //         sub1 = @subWithOverflow(0, q1);
-        //         borrow |= sub1[1];
-        //         sub1 = @subWithOverflow(0, q2);
-        //         borrow |= sub1[1];
-        //         sub1 = @subWithOverflow(0, q3);
-        //         borrow |= sub1[1];
-        //         sub1 = @subWithOverflow(0, q4);
-        //         borrow |= sub1[1];
-        //         sub1 = @subWithOverflow(0, q5);
-        //         borrow |= sub1[1];
-        //         sub1 = @subWithOverflow(0, q6);
-        //         borrow |= sub1[1];
-        //         sub1 = @subWithOverflow(0, q7);
-        //         borrow |= sub1[1];
-        //         sub1 = @subWithOverflow(@as(u64, 1) << 62, q8);
-        //         borrow |= sub1[1];
-        // 
-        //         // decrement the result
-        //         sub1 = @subWithOverflow(r4l, 1);
-        //         const x0_dec = sub1[0];
-        //         var t_borrow = sub1[1];
-        // 
-        //         sub1 = @subWithOverflow(r4k, 0);
-        //         var x1_dec = sub1[0];
-        //         t_borrow |= sub1[1];
-        //         sub1 = @subWithOverflow(x1_dec, t_borrow);
-        //         x1_dec = sub1[0];
-        //         t_borrow = sub1[1];
-        // 
-        //         sub1 = @subWithOverflow(r4j, 0);
-        //         var x2_dec = sub1[0];
-        //         t_borrow |= sub1[1];
-        //         sub1 = @subWithOverflow(x2_dec, t_borrow);
-        //         x2_dec = sub1[0];
-        //         t_borrow = sub1[1];
-        // 
-        //         sub1 = @subWithOverflow(r4i, 0);
-        //         var x3_dec = sub1[0];
-        //         t_borrow |= sub1[1];
-        //         sub1 = @subWithOverflow(x3_dec, t_borrow);
-        //         x3_dec = sub1[0];
-        //         t_borrow = sub1[1];
-        // 
-        //         sub1 = @subWithOverflow(r4h, 0);
-        //         var x4_dec = sub1[0];
-        //         t_borrow |= sub1[1];
-        //         x4_dec -%= t_borrow;
-        // 
-        //         // commit the decrement if the subtraction underflowed (reciprocal was too large)
-        //         if (borrow != 0) {
-        //             r4h = x4_dec;
-        //             r4i = x3_dec;
-        //             r4j = x2_dec;
-        //             r4k = x1_dec;
-        //             r4l = x0_dec;
-        //         }
-        // 
-        //         // Shift to correct bit alignment, truncating excess bits
-        //         var p_shift = (p & 63) - 1;
-        // 
-        //         add1 = @addWithOverflow(r4l, r4l);
-        //         x0_final = add1[0];
-        //         carry = add1[1];
-        // 
-        //         add1 = @addWithOverflow(r4k, r4k);
-        //         x1_final = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(x1_final, carry);
-        //         x1_final = add1[0];
-        //         carry = add1[1];
-        // 
-        //         add1 = @addWithOverflow(r4j, r4j);
-        //         x2_final = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(x2_final, carry);
-        //         x2_final = add1[0];
-        //         carry = add1[1];
-        // 
-        //         add1 = @addWithOverflow(r4i, r4i);
-        //         x3_final = add1[0];
-        //         carry |= add1[1];
-        //         add1 = @addWithOverflow(x3_final, carry);
-        //         x3_final = add1[0];
-        //         carry = add1[1];
-        // 
-        //         add1 = @addWithOverflow(r4h, r4h);
-        //         x4_final = add1[0];
-        //         carry |= add1[1];
-        //         x4_final +%= carry;
-        // 
-        //         if (p_shift < 0) {
-        //             r4h = x4_final;
-        //             r4i = x3_final;
-        //             r4j = x2_final;
-        //             r4k = x1_final;
-        //             r4l = x0_final;
-        //             p_shift = 0; // avoid negative shift below
-        //         }
-        // 
-        //         if (p_shift > 0) {
-        //             const r: u6 = @intCast(p_shift); // right shift
-        //             const l: u6 = @intCast(64 - p_shift); // left shift
-        // 
-        //             x0_final = (r4l >> r) | (r4k << l);
-        //             x1_final = (r4k >> r) | (r4j << l);
-        //             x2_final = (r4j >> r) | (r4i << l);
-        //             x3_final = (r4i >> r) | (r4h << l);
-        //             x4_final = r4h >> r;
-        // 
-        //             r4h = x4_final;
-        //             r4i = x3_final;
-        //             r4j = x2_final;
-        //             r4k = x1_final;
-        //             r4l = x0_final;
-        //         }
-        // 
-        //         mu[0] = r4l;
-        //         mu[1] = r4k;
-        //         mu[2] = r4j;
-        //         mu[3] = r4i;
-        //         mu[4] = r4h;
-        // 
-        //         return mu;
+        if (n >= 192) {
+            self.rsh192(x);
+            const shift = n - 192;
+            self.limbs[0] >>= @intCast(shift);
+            return self;
+        }
+
+        if (n >= 128) {
+            self.rsh128(x);
+            const shift = n - 128;
+            if (shift > 0) {
+                const shift_u6: u6 = @intCast(shift);
+                const lshift: u6 = @intCast(64 - shift);
+                self.limbs[0] = (self.limbs[0] >> shift_u6) | (self.limbs[1] << lshift);
+                self.limbs[1] >>= shift_u6;
+            }
+            return self;
+        }
+
+        if (n >= 64) {
+            self.rsh64(x);
+            const shift = n - 64;
+            if (shift > 0) {
+                const shift_u6: u6 = @intCast(shift);
+                const lshift: u6 = @intCast(64 - shift);
+                self.limbs[0] = (self.limbs[0] >> shift_u6) | (self.limbs[1] << lshift);
+                self.limbs[1] = (self.limbs[1] >> shift_u6) | (self.limbs[2] << lshift);
+                self.limbs[2] >>= shift_u6;
+            }
+            return self;
+        }
+
+        // n < 64
+        _ = self.set(x);
+        const shift_u6: u6 = @intCast(n);
+        self.limbs[0] = (self.limbs[0] >> shift_u6) | (self.limbs[1] << @intCast(64 - n));
+        self.limbs[1] = (self.limbs[1] >> shift_u6) | (self.limbs[2] << @intCast(64 - n));
+        self.limbs[2] = (self.limbs[2] >> shift_u6) | (self.limbs[3] << @intCast(64 - n));
+        self.limbs[3] >>= shift_u6;
+        return self;
+    }
+
+    /// Shifts self right by n bits in place (self = self >> n) and returns self.
+    pub fn irsh(self: *U256, n: u32) *U256 {
+        const self_copy = self.*;
+        return self.rsh(self_copy, n);
+    }
+
+    /// Helper: signed right shift by 64 bits (arithmetic shift, sign-extends with 1s).
+    fn srsh64(self: *U256, x: U256) void {
+        self.limbs[0] = x.limbs[1];
+        self.limbs[1] = x.limbs[2];
+        self.limbs[2] = x.limbs[3];
+        self.limbs[3] = 0xFFFFFFFFFFFFFFFF;
+    }
+
+    /// Helper: signed right shift by 128 bits (arithmetic shift, sign-extends with 1s).
+    fn srsh128(self: *U256, x: U256) void {
+        self.limbs[0] = x.limbs[2];
+        self.limbs[1] = x.limbs[3];
+        self.limbs[2] = 0xFFFFFFFFFFFFFFFF;
+        self.limbs[3] = 0xFFFFFFFFFFFFFFFF;
+    }
+
+    /// Helper: signed right shift by 192 bits (arithmetic shift, sign-extends with 1s).
+    fn srsh192(self: *U256, x: U256) void {
+        self.limbs[0] = x.limbs[3];
+        self.limbs[1] = 0xFFFFFFFFFFFFFFFF;
+        self.limbs[2] = 0xFFFFFFFFFFFFFFFF;
+        self.limbs[3] = 0xFFFFFFFFFFFFFFFF;
+    }
+
+    /// Sets self to x >> n (signed/arithmetic right shift by n bits) and returns self.
+    /// This preserves the sign bit - negative numbers fill with 1s, positive with 0s.
+    pub fn srsh(self: *U256, x: U256, n: u32) *U256 {
+        if (n == 0) {
+            return self.set(x);
+        }
+
+        // Check if the sign bit (MSB of limbs[3]) is set
+        const is_negative = (x.limbs[3] & 0x8000000000000000) != 0;
+
+        if (n >= 256) {
+            // If negative, fill with all 1s; if positive, fill with all 0s
+            if (is_negative) {
+                self.limbs[0] = 0xFFFFFFFFFFFFFFFF;
+                self.limbs[1] = 0xFFFFFFFFFFFFFFFF;
+                self.limbs[2] = 0xFFFFFFFFFFFFFFFF;
+                self.limbs[3] = 0xFFFFFFFFFFFFFFFF;
+            } else {
+                _ = self.clear();
+            }
+            return self;
+        }
+
+        // If positive, use regular right shift
+        if (!is_negative) {
+            return self.rsh(x, n);
+        }
+
+        // Negative number - use arithmetic shift
+        if (n >= 192) {
+            self.srsh192(x);
+            const shift = n - 192;
+            if (shift > 0) {
+                const shift_u6: u6 = @intCast(shift);
+                const lshift: u6 = @intCast(64 - shift);
+                // Sign extend from the right
+                self.limbs[0] = (self.limbs[0] >> shift_u6) | (@as(u64, 0xFFFFFFFFFFFFFFFF) << lshift);
+            }
+            return self;
+        }
+
+        if (n >= 128) {
+            self.srsh128(x);
+            const shift = n - 128;
+            if (shift > 0) {
+                const shift_u6: u6 = @intCast(shift);
+                const lshift: u6 = @intCast(64 - shift);
+                self.limbs[0] = (self.limbs[0] >> shift_u6) | (self.limbs[1] << lshift);
+                self.limbs[1] = (self.limbs[1] >> shift_u6) | (@as(u64, 0xFFFFFFFFFFFFFFFF) << lshift);
+            }
+            return self;
+        }
+
+        if (n >= 64) {
+            self.srsh64(x);
+            const shift = n - 64;
+            if (shift > 0) {
+                const shift_u6: u6 = @intCast(shift);
+                const lshift: u6 = @intCast(64 - shift);
+                self.limbs[0] = (self.limbs[0] >> shift_u6) | (self.limbs[1] << lshift);
+                self.limbs[1] = (self.limbs[1] >> shift_u6) | (self.limbs[2] << lshift);
+                self.limbs[2] = (self.limbs[2] >> shift_u6) | (@as(u64, 0xFFFFFFFFFFFFFFFF) << lshift);
+            }
+            return self;
+        }
+
+        // n < 64
+        _ = self.set(x);
+        const shift_u6: u6 = @intCast(n);
+        const lshift: u6 = @intCast(64 - n);
+        self.limbs[0] = (self.limbs[0] >> shift_u6) | (self.limbs[1] << lshift);
+        self.limbs[1] = (self.limbs[1] >> shift_u6) | (self.limbs[2] << lshift);
+        self.limbs[2] = (self.limbs[2] >> shift_u6) | (self.limbs[3] << lshift);
+        self.limbs[3] = (self.limbs[3] >> shift_u6) | (@as(u64, 0xFFFFFFFFFFFFFFFF) << lshift);
+        return self;
+    }
+
+    /// Performs signed right shift on self by n bits in place (self = self >> n) and returns self.
+    /// Treats self as a signed integer - negative numbers fill with 1s, positive with 0s.
+    pub fn iSRsh(self: *U256, n: u32) *U256 {
+        const self_copy = self.*;
+        return self.srsh(self_copy, n);
+    }
+
+    /// Sets self to ^x (bitwise NOT of x) and returns self.
+    pub fn not(self: *U256, x: U256) *U256 {
+        self.limbs[0] = ~x.limbs[0];
+        self.limbs[1] = ~x.limbs[1];
+        self.limbs[2] = ~x.limbs[2];
+        self.limbs[3] = ~x.limbs[3];
+        return self;
+    }
+
+    /// Sets self to x | y (bitwise OR) and returns self.
+    pub fn or_(self: *U256, x: U256, y: U256) *U256 {
+        self.limbs[0] = x.limbs[0] | y.limbs[0];
+        self.limbs[1] = x.limbs[1] | y.limbs[1];
+        self.limbs[2] = x.limbs[2] | y.limbs[2];
+        self.limbs[3] = x.limbs[3] | y.limbs[3];
+        return self;
+    }
+
+    /// Sets self to x & y (bitwise AND) and returns self.
+    pub fn and_(self: *U256, x: U256, y: U256) *U256 {
+        self.limbs[0] = x.limbs[0] & y.limbs[0];
+        self.limbs[1] = x.limbs[1] & y.limbs[1];
+        self.limbs[2] = x.limbs[2] & y.limbs[2];
+        self.limbs[3] = x.limbs[3] & y.limbs[3];
+        return self;
+    }
+
+    /// Sets self to x ^ y (bitwise XOR) and returns self.
+    pub fn xor(self: *U256, x: U256, y: U256) *U256 {
+        self.limbs[0] = x.limbs[0] ^ y.limbs[0];
+        self.limbs[1] = x.limbs[1] ^ y.limbs[1];
+        self.limbs[2] = x.limbs[2] ^ y.limbs[2];
+        self.limbs[3] = x.limbs[3] ^ y.limbs[3];
+        return self;
     }
 
     /// Sets self to the quotient x / y and m to the modulus x % y, returning both.
@@ -2778,10 +2131,151 @@ pub const U256 = struct {
         return self.div(self_copy, x);
     }
 
+    /// Sets self to ⌊√x⌋, the largest integer such that self² ≤ x, and returns self.
+    /// Uses Newton-Raphson iteration: z = ⌊(z + ⌊x/z⌋)/2⌋ until convergence.
+    /// Based on math/big/nat.go implementation.
+    pub fn sqrt(self: *U256, x: U256) *U256 {
+        // Fast path for small values that fit in u64
+        if (x.isU64()) {
+            const x0 = x.getU64();
+            if (x0 < 2) {
+                return self.setU64(x0);
+            }
+
+            // Newton's method for u64
+            var z1: u64 = @as(u64, 1) << @intCast((64 - @clz(x0) + 1) / 2);
+            while (true) {
+                const z2 = (z1 + x0 / z1) >> 1;
+                if (z2 >= z1) {
+                    return self.setU64(z1);
+                }
+                z1 = z2;
+            }
+        }
+
+        // Newton's method for full 256-bit values
+        var z1 = U256.init(1);
+        var z2 = U256.initZero();
+
+        // Start with value known to be too large: z1 = 2^⌈(bitLen+1)/2⌉
+        const bit_len = x.bitLen();
+        const shift: u32 = @intCast((bit_len + 1) / 2);
+        _ = z1.lsh(z1, shift); // z1 must be ≥ √x
+
+        // First division is just a right shift
+        _ = z2.rsh(x, shift);
+
+        while (true) {
+            // z2 = (z2 + z1) / 2
+            _ = z2.add(z2, z1);
+
+            // Fast 1-bit right shift (instead of calling rsh(z2, 1))
+            z2.limbs[0] = (z2.limbs[0] >> 1) | (z2.limbs[1] << 63);
+            z2.limbs[1] = (z2.limbs[1] >> 1) | (z2.limbs[2] << 63);
+            z2.limbs[2] = (z2.limbs[2] >> 1) | (z2.limbs[3] << 63);
+            z2.limbs[3] >>= 1;
+
+            // Check convergence: if z2 >= z1, we're done
+            if (!z2.lt(z1)) {
+                return self.set(z1);
+            }
+
+            _ = z1.set(z2);
+
+            // Next iteration: z2 = x / z1
+            _ = z2.clear();
+            var quot: [4]u64 = [_]u64{0} ** 4;
+            division.udivrem(&quot, &x.limbs, &z1, null);
+            z2.limbs = quot;
+        }
+    }
+
+    /// Sets self to ⌊√self⌋, the largest integer such that self² ≤ original self,
+    /// modifying self in place, and returns self.
+    /// Mathematically: self = ⌊√self⌋.
+    pub fn iSqrt(self: *U256) *U256 {
+        const self_copy = self.*;
+        return self.sqrt(self_copy);
+    }
+
+    /// Sets self to base^exponent mod 2^256 and returns self.
+    /// Uses the square-and-multiply algorithm (binary exponentiation).
+    ///
+    /// Optimization: If base is even and exponent > 256 (bitLen > 8),
+    /// the result will be 0 due to modular reduction, so we can return early.
+    pub fn exp(self: *U256, base: U256, exponent: U256) *U256 {
+        var res = U256.init(1);
+        var multiplier = base;
+        const exp_bit_len = exponent.bitLen();
+        var cur_bit: usize = 0;
+
+        // Check if base is even
+        const even = (base.limbs[0] & 1) == 0;
+
+        // If base is even and exponent > 256, result is 0
+        if (even and exp_bit_len > 8) {
+            return self.clear();
+        }
+
+        // Process limbs[0] (bits 0-63)
+        var word = exponent.limbs[0];
+        while (cur_bit < exp_bit_len and cur_bit < 64) : (cur_bit += 1) {
+            if ((word & 1) == 1) {
+                _ = res.mul(res, multiplier);
+            }
+            _ = multiplier.squared();
+            word >>= 1;
+        }
+
+        // If base was even, we're done (small exponents)
+        if (even) {
+            return self.set(res);
+        }
+
+        // Process limbs[1] (bits 64-127)
+        word = exponent.limbs[1];
+        while (cur_bit < exp_bit_len and cur_bit < 128) : (cur_bit += 1) {
+            if ((word & 1) == 1) {
+                _ = res.mul(res, multiplier);
+            }
+            _ = multiplier.squared();
+            word >>= 1;
+        }
+
+        // Process limbs[2] (bits 128-191)
+        word = exponent.limbs[2];
+        while (cur_bit < exp_bit_len and cur_bit < 192) : (cur_bit += 1) {
+            if ((word & 1) == 1) {
+                _ = res.mul(res, multiplier);
+            }
+            _ = multiplier.squared();
+            word >>= 1;
+        }
+
+        // Process limbs[3] (bits 192-255)
+        word = exponent.limbs[3];
+        while (cur_bit < exp_bit_len and cur_bit < 256) : (cur_bit += 1) {
+            if ((word & 1) == 1) {
+                _ = res.mul(res, multiplier);
+            }
+            _ = multiplier.squared();
+            word >>= 1;
+        }
+
+        return self.set(res);
+    }
+
+    /// Sets self to self^exponent mod 2^256 and returns self.
+    /// In-place version of exp.
+    pub fn iExp(self: *U256, exponent: U256) *U256 {
+        const self_copy = self.*;
+        return self.exp(self_copy, exponent);
+    }
+
     /// Writes all 32 bytes of self to the destination slice, including zero-bytes.
     /// If dest is larger than 32 bytes, self will fill the first 32 bytes, leaving the rest untouched.
     /// Returns error.BufferTooSmall if dest is smaller than 32 bytes.
-    pub fn putUint256(self: U256, dest: []u8) error{BufferTooSmall}!void {
+    pub fn putU256(self: U256, dest: []u8) error{BufferTooSmall}!void {
         if (dest.len < 32) return error.BufferTooSmall;
         mem.writeInt(u64, dest[0..8], self.limbs[3], .big);
         mem.writeInt(u64, dest[8..16], self.limbs[2], .big);
@@ -3104,6 +2598,149 @@ test "U256 getU64 - with higher limbs" {
     try std.testing.expectEqual(@as(u64, 12345), z.getU64());
 }
 
+test "U256 byte - extract LSB (position 31)" {
+    var z = U256.init(0xAB);
+    const n = U256.init(31);
+    _ = z.byte(n);
+    // Position 31 is the least significant byte
+    try std.testing.expectEqual(@as(u64, 0xAB), z.limbs[0]);
+}
+
+test "U256 byte - extract MSB (position 0)" {
+    var z = U256.initZero();
+    z.limbs[3] = 0xAB00000000000000; // MSB of limbs[3] is position 0
+    const n = U256.init(0);
+    _ = z.byte(n);
+    // Position 0 is the most significant byte
+    try std.testing.expectEqual(@as(u64, 0xAB), z.limbs[0]);
+}
+
+test "U256 byte - extract from position 7" {
+    var z = U256.initZero();
+    z.limbs[3] = 0x0102030405060708; // Bytes 0-7 in big-endian
+    const n = U256.init(7);
+    _ = z.byte(n);
+    // Position 7 is the LSB of limbs[3]
+    try std.testing.expectEqual(@as(u64, 0x08), z.limbs[0]);
+}
+
+test "U256 byte - extract from position 8" {
+    var z = U256.initZero();
+    z.limbs[2] = 0x090A0B0C0D0E0F10; // Bytes 8-15 in big-endian
+    const n = U256.init(8);
+    _ = z.byte(n);
+    // Position 8 is the MSB of limbs[2]
+    try std.testing.expectEqual(@as(u64, 0x09), z.limbs[0]);
+}
+
+test "U256 byte - extract from position 15" {
+    var z = U256.initZero();
+    z.limbs[2] = 0x090A0B0C0D0E0F10; // Bytes 8-15 in big-endian
+    const n = U256.init(15);
+    _ = z.byte(n);
+    // Position 15 is the LSB of limbs[2]
+    try std.testing.expectEqual(@as(u64, 0x10), z.limbs[0]);
+}
+
+test "U256 byte - extract from position 16" {
+    var z = U256.initZero();
+    z.limbs[1] = 0x1112131415161718; // Bytes 16-23 in big-endian
+    const n = U256.init(16);
+    _ = z.byte(n);
+    // Position 16 is the MSB of limbs[1]
+    try std.testing.expectEqual(@as(u64, 0x11), z.limbs[0]);
+}
+
+test "U256 byte - extract from position 24" {
+    var z = U256.initZero();
+    z.limbs[0] = 0x191A1B1C1D1E1F20; // Bytes 24-31 in big-endian
+    const n = U256.init(24);
+    _ = z.byte(n);
+    // Position 24 is the MSB of limbs[0]
+    try std.testing.expectEqual(@as(u64, 0x19), z.limbs[0]);
+}
+
+test "U256 byte - position 32 returns zero" {
+    var z = U256.init(0xFF);
+    const n = U256.init(32);
+    _ = z.byte(n);
+    // Position >= 32 should clear z
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[3]);
+}
+
+test "U256 byte - position 100 returns zero" {
+    var z = U256.init(0xFF);
+    const n = U256.init(100);
+    _ = z.byte(n);
+    // Position >= 32 should clear z
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[0]);
+}
+
+test "U256 byte - position with overflow returns zero" {
+    var z = U256.init(0xFF);
+    var n = U256.initZero();
+    n.limbs[1] = 1; // n > 2^64
+    _ = z.byte(n);
+    // Large n should clear z
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[0]);
+}
+
+test "U256 byte - full 256-bit value" {
+    var z = U256.initZero();
+    // Set all limbs to distinct patterns
+    z.limbs[0] = 0x191A1B1C1D1E1F20; // Bytes 24-31
+    z.limbs[1] = 0x1112131415161718; // Bytes 16-23
+    z.limbs[2] = 0x090A0B0C0D0E0F10; // Bytes 8-15
+    z.limbs[3] = 0x0102030405060708; // Bytes 0-7
+
+    // Test extracting various bytes
+    var result = z;
+    _ = result.byte(U256.init(0));
+    try std.testing.expectEqual(@as(u64, 0x01), result.limbs[0]);
+
+    result = z;
+    _ = result.byte(U256.init(7));
+    try std.testing.expectEqual(@as(u64, 0x08), result.limbs[0]);
+
+    result = z;
+    _ = result.byte(U256.init(15));
+    try std.testing.expectEqual(@as(u64, 0x10), result.limbs[0]);
+
+    result = z;
+    _ = result.byte(U256.init(23));
+    try std.testing.expectEqual(@as(u64, 0x18), result.limbs[0]);
+
+    result = z;
+    _ = result.byte(U256.init(31));
+    try std.testing.expectEqual(@as(u64, 0x20), result.limbs[0]);
+}
+
+test "U256 byte - zero value" {
+    var z = U256.initZero();
+    const n = U256.init(15);
+    _ = z.byte(n);
+    // Byte from zero should be zero
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[0]);
+}
+
+test "U256 byte - clears higher limbs" {
+    var z = U256.initZero();
+    z.limbs[0] = 0xFF;
+    z.limbs[1] = 0xFF;
+    z.limbs[2] = 0xFF;
+    z.limbs[3] = 0xAB00000000000000;
+    const n = U256.init(0);
+    _ = z.byte(n);
+    // Should extract 0xAB and clear all other limbs
+    try std.testing.expectEqual(@as(u64, 0xAB), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[3]);
+}
+
 test "U256 setU64 - simple" {
     var z = U256.initZero();
     _ = z.setU64(42);
@@ -3402,7 +3039,7 @@ test "U256 lowerU64 - truncates higher limbs" {
     try std.testing.expectEqual(@as(u64, 0x1111111111111111), z.lowerU64());
 }
 
-test "U256 putUint256 - success" {
+test "U256 putU256 - success" {
     var z = U256.initZero();
     _ = z.setBytes(&[_]u8{
         0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
@@ -3411,22 +3048,22 @@ test "U256 putUint256 - success" {
         0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20,
     });
     var dest: [32]u8 = undefined;
-    try z.putUint256(&dest);
+    try z.putU256(&dest);
     try std.testing.expectEqual(@as(u8, 0x01), dest[0]);
     try std.testing.expectEqual(@as(u8, 0x10), dest[15]);
     try std.testing.expectEqual(@as(u8, 0x20), dest[31]);
 }
 
-test "U256 putUint256 - buffer too small" {
+test "U256 putU256 - buffer too small" {
     const z = U256.init(0x1234);
     var dest: [31]u8 = undefined;
-    try std.testing.expectError(error.BufferTooSmall, z.putUint256(&dest));
+    try std.testing.expectError(error.BufferTooSmall, z.putU256(&dest));
 }
 
-test "U256 putUint256 - larger buffer" {
+test "U256 putU256 - larger buffer" {
     const z = U256.init(0x42);
     var dest: [40]u8 = [_]u8{0xFF} ** 40;
-    try z.putUint256(&dest);
+    try z.putU256(&dest);
     // First 32 bytes should be written
     try std.testing.expectEqual(@as(u8, 0), dest[0]);
     try std.testing.expectEqual(@as(u8, 0x42), dest[31]);
@@ -3866,6 +3503,168 @@ test "U256 sign - max negative" {
     z.limbs[2] = 0xFFFFFFFFFFFFFFFF;
     z.limbs[3] = 0xFFFFFFFFFFFFFFFF;
     try std.testing.expectEqual(@as(i8, -1), z.sign());
+}
+
+test "U256 extendSign - byte_num > 30" {
+    var z = U256.initZero();
+    const x = U256.init(0xFF);
+    const byte_num = U256.init(31);
+    _ = z.extendSign(x, byte_num);
+    // byte_num > 30, should just copy x
+    try std.testing.expectEqual(@as(u64, 0xFF), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+}
+
+test "U256 extendSign - positive byte 0" {
+    var z = U256.initZero();
+    const x = U256.init(0x7F); // Sign bit not set in byte 0
+    const byte_num = U256.init(0);
+    _ = z.extendSign(x, byte_num);
+    // Positive value, should remain 0x7F
+    try std.testing.expectEqual(@as(u64, 0x7F), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[3]);
+}
+
+test "U256 extendSign - negative byte 0" {
+    var z = U256.initZero();
+    const x = U256.init(0xFF); // Sign bit set in byte 0
+    const byte_num = U256.init(0);
+    _ = z.extendSign(x, byte_num);
+    // Negative value, should extend with 1s
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[3]);
+}
+
+test "U256 extendSign - positive byte 1" {
+    var z = U256.initZero();
+    const x = U256.init(0x7FFF); // Sign bit not set in byte 1
+    const byte_num = U256.init(1);
+    _ = z.extendSign(x, byte_num);
+    // Positive value, should remain 0x7FFF
+    try std.testing.expectEqual(@as(u64, 0x7FFF), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+}
+
+test "U256 extendSign - negative byte 1" {
+    var z = U256.initZero();
+    const x = U256.init(0x80FF); // Sign bit set in byte 1 (0x80)
+    const byte_num = U256.init(1);
+    _ = z.extendSign(x, byte_num);
+    // Should extend sign from byte 1
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFF80FF), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[3]);
+}
+
+test "U256 extendSign - byte 7 (end of limb 0)" {
+    var z = U256.initZero();
+    var x = U256.initZero();
+    x.limbs[0] = 0x7FFFFFFFFFFFFFFF; // Sign bit not set in byte 7
+    const byte_num = U256.init(7);
+    _ = z.extendSign(x, byte_num);
+    // Positive, should keep value
+    try std.testing.expectEqual(@as(u64, 0x7FFFFFFFFFFFFFFF), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+}
+
+test "U256 extendSign - byte 8 (start of limb 1)" {
+    var z = U256.initZero();
+    var x = U256.initZero();
+    x.limbs[0] = 0xFFFFFFFFFFFFFFFF;
+    x.limbs[1] = 0x7F; // Positive sign bit in byte 8
+    const byte_num = U256.init(8);
+    _ = z.extendSign(x, byte_num);
+    // Should keep lower bytes, zero extend
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0x7F), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[3]);
+}
+
+test "U256 extendSign - negative byte 8" {
+    var z = U256.initZero();
+    var x = U256.initZero();
+    x.limbs[0] = 0xFFFFFFFFFFFFFFFF;
+    x.limbs[1] = 0xFF; // Negative sign bit in byte 8
+    const byte_num = U256.init(8);
+    _ = z.extendSign(x, byte_num);
+    // Should extend with 1s from byte 8
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[3]);
+}
+
+test "U256 extendSign - byte 15 (end of limb 1)" {
+    var z = U256.initZero();
+    var x = U256.initZero();
+    x.limbs[0] = 0x1234567890ABCDEF;
+    x.limbs[1] = 0x80FFFFFFFFFFFFFF; // Negative in byte 15 (MSB of limb[1])
+    const byte_num = U256.init(15);
+    _ = z.extendSign(x, byte_num);
+    // Should extend sign from byte 15
+    try std.testing.expectEqual(@as(u64, 0x1234567890ABCDEF), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0x80FFFFFFFFFFFFFF), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[3]);
+}
+
+test "U256 extendSign - byte 16 (start of limb 2)" {
+    var z = U256.initZero();
+    var x = U256.initZero();
+    x.limbs[0] = 0xFFFFFFFFFFFFFFFF;
+    x.limbs[1] = 0xFFFFFFFFFFFFFFFF;
+    x.limbs[2] = 0x7F; // Positive in byte 16
+    const byte_num = U256.init(16);
+    _ = z.extendSign(x, byte_num);
+    // Should keep lower values, zero extend
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0x7F), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[3]);
+}
+
+test "U256 extendSign - byte 24 (start of limb 3)" {
+    var z = U256.initZero();
+    var x = U256.initZero();
+    x.limbs[0] = 0x1234567890ABCDEF;
+    x.limbs[1] = 0xFEDCBA0987654321;
+    x.limbs[2] = 0x1122334455667788;
+    x.limbs[3] = 0x80; // Negative in byte 24
+    const byte_num = U256.init(24);
+    _ = z.extendSign(x, byte_num);
+    // Should extend sign from byte 24
+    try std.testing.expectEqual(@as(u64, 0x1234567890ABCDEF), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0xFEDCBA0987654321), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0x1122334455667788), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFF80), z.limbs[3]);
+}
+
+test "U256 extendSign - byte 30 (boundary)" {
+    var z = U256.initZero();
+    var x = U256.initZero();
+    x.limbs[3] = 0x007FFFFFFFFFFF00; // Positive at byte 30 (byte 30 = 0x7F)
+    const byte_num = U256.init(30);
+    _ = z.extendSign(x, byte_num);
+    // Should keep value (byte 30 is 0x7F, positive, so no extension)
+    try std.testing.expectEqual(@as(u64, 0x007FFFFFFFFFFF00), z.limbs[3]);
+}
+
+test "U256 extendSign - zero value" {
+    var z = U256.initZero();
+    const x = U256.initZero();
+    const byte_num = U256.init(0);
+    _ = z.extendSign(x, byte_num);
+    // Zero should remain zero
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[3]);
 }
 
 test "U256 neg - zero" {
@@ -5252,6 +5051,295 @@ test "U256 squared - multi-limb" {
     try std.testing.expectEqual(@as(u64, 1), z.limbs[1]);
 }
 
+test "U256 sqrt - zero" {
+    var z = U256.initZero();
+    const x = U256.init(0);
+    _ = z.sqrt(x);
+    // √0 = 0
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[0]);
+}
+
+test "U256 sqrt - one" {
+    var z = U256.initZero();
+    const x = U256.init(1);
+    _ = z.sqrt(x);
+    // √1 = 1
+    try std.testing.expectEqual(@as(u64, 1), z.limbs[0]);
+}
+
+test "U256 sqrt - perfect squares small" {
+    var z = U256.initZero();
+
+    // √4 = 2
+    _ = z.sqrt(U256.init(4));
+    try std.testing.expectEqual(@as(u64, 2), z.limbs[0]);
+
+    // √9 = 3
+    _ = z.sqrt(U256.init(9));
+    try std.testing.expectEqual(@as(u64, 3), z.limbs[0]);
+
+    // √16 = 4
+    _ = z.sqrt(U256.init(16));
+    try std.testing.expectEqual(@as(u64, 4), z.limbs[0]);
+
+    // √25 = 5
+    _ = z.sqrt(U256.init(25));
+    try std.testing.expectEqual(@as(u64, 5), z.limbs[0]);
+}
+
+test "U256 sqrt - non-perfect squares" {
+    var z = U256.initZero();
+
+    // √2 = 1 (floor)
+    _ = z.sqrt(U256.init(2));
+    try std.testing.expectEqual(@as(u64, 1), z.limbs[0]);
+
+    // √3 = 1 (floor)
+    _ = z.sqrt(U256.init(3));
+    try std.testing.expectEqual(@as(u64, 1), z.limbs[0]);
+
+    // √8 = 2 (floor, since 2² = 4 and 3² = 9)
+    _ = z.sqrt(U256.init(8));
+    try std.testing.expectEqual(@as(u64, 2), z.limbs[0]);
+
+    // √15 = 3 (floor, since 3² = 9 and 4² = 16)
+    _ = z.sqrt(U256.init(15));
+    try std.testing.expectEqual(@as(u64, 3), z.limbs[0]);
+}
+
+test "U256 sqrt - larger value" {
+    var z = U256.initZero();
+    const x = U256.init(10000);
+    _ = z.sqrt(x);
+    // √10000 = 100
+    try std.testing.expectEqual(@as(u64, 100), z.limbs[0]);
+}
+
+test "U256 sqrt - large perfect square" {
+    var z = U256.initZero();
+    const x = U256.init(1000000);
+    _ = z.sqrt(x);
+    // √1000000 = 1000
+    try std.testing.expectEqual(@as(u64, 1000), z.limbs[0]);
+}
+
+test "U256 sqrt - u64 max" {
+    var z = U256.initZero();
+    var x = U256.initZero();
+    x.limbs[0] = 0xFFFFFFFFFFFFFFFF;
+    _ = z.sqrt(x);
+    // √(2^64-1) ≈ 2^32 = 4294967296
+    try std.testing.expectEqual(@as(u64, 4294967295), z.limbs[0]);
+}
+
+test "U256 iSqrt - simple" {
+    var z = U256.init(100);
+    _ = z.iSqrt();
+    // √100 = 10
+    try std.testing.expectEqual(@as(u64, 10), z.limbs[0]);
+}
+
+test "U256 iSqrt - perfect square" {
+    var z = U256.init(144);
+    _ = z.iSqrt();
+    // √144 = 12
+    try std.testing.expectEqual(@as(u64, 12), z.limbs[0]);
+}
+
+test "U256 iSqrt - non-perfect square" {
+    var z = U256.init(50);
+    _ = z.iSqrt();
+    // √50 = 7 (floor, since 7² = 49 and 8² = 64)
+    try std.testing.expectEqual(@as(u64, 7), z.limbs[0]);
+}
+
+test "U256 iSqrt - zero" {
+    var z = U256.init(0);
+    _ = z.iSqrt();
+    // √0 = 0
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[0]);
+}
+
+test "U256 iSqrt - one" {
+    var z = U256.init(1);
+    _ = z.iSqrt();
+    // √1 = 1
+    try std.testing.expectEqual(@as(u64, 1), z.limbs[0]);
+}
+
+test "U256 sqrt - verify property" {
+    // For any n, verify that sqrt(n)² ≤ n < (sqrt(n)+1)²
+    var z = U256.initZero();
+    const x = U256.init(99);
+    _ = z.sqrt(x);
+
+    // √99 = 9 (since 9² = 81 and 10² = 100)
+    try std.testing.expectEqual(@as(u64, 9), z.limbs[0]);
+
+    // Verify: 9² = 81 ≤ 99
+    var z_squared = z;
+    _ = z_squared.squared();
+    try std.testing.expect(z_squared.limbs[0] <= 99);
+
+    // Verify: 99 < 10² = 100
+    var z_plus_one = z;
+    _ = z_plus_one.add(z_plus_one, U256.init(1));
+    _ = z_plus_one.squared();
+    try std.testing.expect(99 < z_plus_one.limbs[0]);
+}
+
+test "U256 exp - zero exponent" {
+    var z = U256.initZero();
+    const base = U256.init(5);
+    const exponent = U256.init(0);
+    _ = z.exp(base, exponent);
+    // Any number to the power of 0 is 1
+    try std.testing.expectEqual(@as(u64, 1), z.limbs[0]);
+}
+
+test "U256 exp - exponent one" {
+    var z = U256.initZero();
+    const base = U256.init(42);
+    const exponent = U256.init(1);
+    _ = z.exp(base, exponent);
+    // 42^1 = 42
+    try std.testing.expectEqual(@as(u64, 42), z.limbs[0]);
+}
+
+test "U256 exp - base zero" {
+    var z = U256.initZero();
+    const base = U256.init(0);
+    const exponent = U256.init(5);
+    _ = z.exp(base, exponent);
+    // 0^5 = 0
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[0]);
+}
+
+test "U256 exp - base one" {
+    var z = U256.initZero();
+    const base = U256.init(1);
+    const exponent = U256.init(100);
+    _ = z.exp(base, exponent);
+    // 1^100 = 1
+    try std.testing.expectEqual(@as(u64, 1), z.limbs[0]);
+}
+
+test "U256 exp - simple powers" {
+    var z = U256.initZero();
+    const base = U256.init(2);
+
+    // 2^3 = 8
+    _ = z.exp(base, U256.init(3));
+    try std.testing.expectEqual(@as(u64, 8), z.limbs[0]);
+
+    // 2^10 = 1024
+    _ = z.exp(base, U256.init(10));
+    try std.testing.expectEqual(@as(u64, 1024), z.limbs[0]);
+}
+
+test "U256 exp - larger base" {
+    var z = U256.initZero();
+    const base = U256.init(3);
+    const exponent = U256.init(5);
+    _ = z.exp(base, exponent);
+    // 3^5 = 243
+    try std.testing.expectEqual(@as(u64, 243), z.limbs[0]);
+}
+
+test "U256 exp - power of 2 to 64" {
+    var z = U256.initZero();
+    const base = U256.init(2);
+    const exponent = U256.init(64);
+    _ = z.exp(base, exponent);
+    // 2^64 overflows to next limb
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 1), z.limbs[1]);
+}
+
+test "U256 exp - modular wraparound" {
+    var z = U256.initZero();
+    const base = U256.init(2);
+    const exponent = U256.init(256);
+    _ = z.exp(base, exponent);
+    // 2^256 mod 2^256 = 0
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[3]);
+}
+
+test "U256 exp - even base large exponent" {
+    var z = U256.initZero();
+    const base = U256.init(4); // Even base
+    var exponent = U256.initZero();
+    exponent.limbs[0] = 512; // exponent > 256 (bitLen > 8)
+    _ = z.exp(base, exponent);
+    // Should return 0 (optimization for even base with large exponent)
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[0]);
+}
+
+test "U256 exp - odd base large exponent" {
+    var z = U256.initZero();
+    const base = U256.init(3); // Odd base
+    const exponent = U256.init(100);
+    _ = z.exp(base, exponent);
+    // 3^100 mod 2^256 (should wrap around, non-zero result)
+    // Just verify it computed something
+    const is_zero = z.limbs[0] == 0 and z.limbs[1] == 0 and z.limbs[2] == 0 and z.limbs[3] == 0;
+    try std.testing.expectEqual(false, is_zero);
+}
+
+test "U256 exp - 5^13" {
+    var z = U256.initZero();
+    const base = U256.init(5);
+    const exponent = U256.init(13);
+    _ = z.exp(base, exponent);
+    // 5^13 = 1220703125
+    try std.testing.expectEqual(@as(u64, 1220703125), z.limbs[0]);
+}
+
+test "U256 iExp - simple" {
+    var z = U256.init(3);
+    const exponent = U256.init(4);
+    _ = z.iExp(exponent);
+    // 3^4 = 81
+    try std.testing.expectEqual(@as(u64, 81), z.limbs[0]);
+}
+
+test "U256 iExp - base 2" {
+    var z = U256.init(2);
+    const exponent = U256.init(10);
+    _ = z.iExp(exponent);
+    // 2^10 = 1024
+    try std.testing.expectEqual(@as(u64, 1024), z.limbs[0]);
+}
+
+test "U256 iExp - exponent zero" {
+    var z = U256.init(100);
+    const exponent = U256.init(0);
+    _ = z.iExp(exponent);
+    // 100^0 = 1
+    try std.testing.expectEqual(@as(u64, 1), z.limbs[0]);
+}
+
+test "U256 iExp - chaining" {
+    var z = U256.init(2);
+    _ = z.iExp(U256.init(3)); // 2^3 = 8
+    _ = z.iExp(U256.init(2)); // 8^2 = 64
+    try std.testing.expectEqual(@as(u64, 64), z.limbs[0]);
+}
+
+test "U256 exp - multi-limb base" {
+    var z = U256.initZero();
+    var base = U256.initZero();
+    base.limbs[0] = 0xFFFFFFFFFFFFFFFF;
+    const exponent = U256.init(2);
+    _ = z.exp(base, exponent);
+    // (2^64-1)^2 should produce a large result
+    const is_zero = z.limbs[0] == 0 and z.limbs[1] == 0 and z.limbs[2] == 0 and z.limbs[3] == 0;
+    try std.testing.expectEqual(false, is_zero);
+}
+
 test "U256 isBitSet - LSB" {
     const z = U256.init(1);
     try std.testing.expectEqual(true, z.isBitSet(0));
@@ -5695,6 +5783,1390 @@ test "U256 lsh - chaining" {
     try std.testing.expectEqual(@as(u64, 32), z.limbs[0]);
 }
 
+test "U256 ilsh - zero shift" {
+    var z = U256.init(42);
+    _ = z.ilsh(0);
+    try std.testing.expectEqual(@as(u64, 42), z.limbs[0]);
+}
+
+test "U256 ilsh - shift by 1" {
+    var z = U256.init(5);
+    _ = z.ilsh(1);
+    // 5 << 1 = 10
+    try std.testing.expectEqual(@as(u64, 10), z.limbs[0]);
+}
+
+test "U256 ilsh - shift by 64" {
+    var z = U256.init(0xFF);
+    _ = z.ilsh(64);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0xFF), z.limbs[1]);
+}
+
+test "U256 ilsh - shift by 128" {
+    var z = U256.init(0xABCD);
+    _ = z.ilsh(128);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0xABCD), z.limbs[2]);
+}
+
+test "U256 ilsh - shift by 192" {
+    var z = U256.init(0x1234);
+    _ = z.ilsh(192);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0x1234), z.limbs[3]);
+}
+
+test "U256 ilsh - chaining" {
+    var z = U256.init(1);
+    _ = z.ilsh(2).ilsh(3);
+    // 1 << 2 = 4, then 4 << 3 = 32
+    try std.testing.expectEqual(@as(u64, 32), z.limbs[0]);
+}
+
+test "U256 ilsh - modifies in place" {
+    var z = U256.init(7);
+    const original_ptr = &z;
+    const result_ptr = z.ilsh(4);
+    // Verify the same instance is modified
+    try std.testing.expect(original_ptr == result_ptr);
+    // 7 << 4 = 112
+    try std.testing.expectEqual(@as(u64, 112), z.limbs[0]);
+}
+
+test "U256 ilsh - large shift with cross-limb" {
+    var z = U256.initZero();
+    z.limbs[0] = 0xFF00000000000000;
+    z.limbs[1] = 0x00000000000000FF;
+    _ = z.ilsh(8);
+    // limbs[0] = 0xFF00000000000000 << 8 = 0 (all bits shift out)
+    // limbs[1] = (0x00000000000000FF << 8) | (0xFF00000000000000 >> 56)
+    //          = 0x000000000000FF00 | 0x00000000000000FF = 0xFFFF
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0xFFFF), z.limbs[1]);
+}
+
+test "U256 rsh - zero shift" {
+    const x = U256.init(42);
+    var z = U256.initZero();
+    _ = z.rsh(x, 0);
+    try std.testing.expectEqual(@as(u64, 42), z.limbs[0]);
+}
+
+test "U256 rsh - shift by 1" {
+    const x = U256.init(10);
+    var z = U256.initZero();
+    _ = z.rsh(x, 1);
+    // 10 >> 1 = 5
+    try std.testing.expectEqual(@as(u64, 5), z.limbs[0]);
+}
+
+test "U256 rsh - shift by 63" {
+    var x = U256.initZero();
+    x.limbs[0] = 0x8000000000000000;
+    var z = U256.initZero();
+    _ = z.rsh(x, 63);
+    // 0x8000000000000000 >> 63 = 1
+    try std.testing.expectEqual(@as(u64, 1), z.limbs[0]);
+}
+
+test "U256 rsh - shift by 64" {
+    var x = U256.initZero();
+    x.limbs[1] = 1;
+    var z = U256.initZero();
+    _ = z.rsh(x, 64);
+    // limbs[1] = 1 >> 64 moves to limbs[0]
+    try std.testing.expectEqual(@as(u64, 1), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+}
+
+test "U256 rsh - shift by 128" {
+    var x = U256.initZero();
+    x.limbs[2] = 1;
+    var z = U256.initZero();
+    _ = z.rsh(x, 128);
+    // limbs[2] = 1 >> 128 moves to limbs[0]
+    try std.testing.expectEqual(@as(u64, 1), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[2]);
+}
+
+test "U256 rsh - shift by 192" {
+    var x = U256.initZero();
+    x.limbs[3] = 1;
+    var z = U256.initZero();
+    _ = z.rsh(x, 192);
+    // limbs[3] = 1 >> 192 moves to limbs[0]
+    try std.testing.expectEqual(@as(u64, 1), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[3]);
+}
+
+test "U256 rsh - shift by 255" {
+    var x = U256.initZero();
+    x.limbs[3] = 0x8000000000000000;
+    var z = U256.initZero();
+    _ = z.rsh(x, 255);
+    // MSB of limbs[3] >> 255 = 1
+    try std.testing.expectEqual(@as(u64, 1), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[3]);
+}
+
+test "U256 rsh - shift by 256 or more" {
+    var x = U256.initZero();
+    x.limbs[0] = 0xFFFFFFFFFFFFFFFF;
+    x.limbs[1] = 0xFFFFFFFFFFFFFFFF;
+    x.limbs[2] = 0xFFFFFFFFFFFFFFFF;
+    x.limbs[3] = 0xFFFFFFFFFFFFFFFF;
+    var z = U256.initZero();
+    _ = z.rsh(x, 256);
+    // All bits shift out
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[3]);
+}
+
+test "U256 rsh - multi-limb shift" {
+    var x = U256.initZero();
+    x.limbs[0] = 0x1234567890ABCDEF;
+    x.limbs[1] = 0xFEDCBA0987654321;
+    var z = U256.initZero();
+    _ = z.rsh(x, 4);
+    // Each limb shifts right by 4, with carries from higher limbs
+    try std.testing.expectEqual(@as(u64, 0x11234567890ABCDE), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0x0FEDCBA098765432), z.limbs[1]);
+}
+
+test "U256 rsh - chaining" {
+    var z = U256.init(32);
+    _ = z.rsh(z, 2).rsh(z, 3);
+    // 32 >> 2 = 8, then 8 >> 3 = 1
+    try std.testing.expectEqual(@as(u64, 1), z.limbs[0]);
+}
+
+test "U256 rsh - cross-limb boundary" {
+    var x = U256.initZero();
+    x.limbs[0] = 0xFFFFFFFFFFFFFFFF;
+    x.limbs[1] = 0xFFFFFFFFFFFFFFFF;
+    var z = U256.initZero();
+    _ = z.rsh(x, 68);
+    // Shift right by 68 = 64 + 4, so limbs shift and then 4 more bits
+    // limbs[1] -> limbs[0], then >> 4
+    // 0xFFFFFFFFFFFFFFFF >> 4 = 0x0FFFFFFFFFFFFFFF
+    try std.testing.expectEqual(@as(u64, 0x0FFFFFFFFFFFFFFF), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+}
+
+test "U256 irsh - simple shift" {
+    var z = U256.init(32);
+    _ = z.irsh(2);
+    // 32 >> 2 = 8
+    try std.testing.expectEqual(@as(u64, 8), z.limbs[0]);
+}
+
+test "U256 irsh - zero shift" {
+    var z = U256.init(100);
+    _ = z.irsh(0);
+    try std.testing.expectEqual(@as(u64, 100), z.limbs[0]);
+}
+
+test "U256 irsh - shift by 64" {
+    var z = U256.initZero();
+    z.limbs[0] = 0x123456789ABCDEF0;
+    z.limbs[1] = 0xFEDCBA0987654321;
+    _ = z.irsh(64);
+    // limbs[1] moves to limbs[0]
+    try std.testing.expectEqual(@as(u64, 0xFEDCBA0987654321), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+}
+
+test "U256 irsh - large shift with cross-limb" {
+    var z = U256.initZero();
+    z.limbs[0] = 0xFF00000000000000;
+    z.limbs[1] = 0x00000000000000FF;
+    _ = z.irsh(8);
+    // After shifting right by 8:
+    // limbs[0] = (0xFF00000000000000 >> 8) | (0x00000000000000FF << 56)
+    //          = 0x00FF000000000000 | 0xFF00000000000000
+    //          = 0xFFFF000000000000
+    // limbs[1] = 0x00000000000000FF >> 8 = 0
+    try std.testing.expectEqual(@as(u64, 0xFFFF000000000000), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+}
+
+test "U256 irsh - chaining operations" {
+    var z = U256.init(128);
+    _ = z.irsh(2);
+    _ = z.irsh(2);
+    // 128 >> 2 = 32, then 32 >> 2 = 8
+    try std.testing.expectEqual(@as(u64, 8), z.limbs[0]);
+}
+
+test "U256 irsh - shift by 192" {
+    var z = U256.initZero();
+    z.limbs[3] = 0xABCDEF0123456789;
+    _ = z.irsh(192);
+    // limbs[3] moves to limbs[0]
+    try std.testing.expectEqual(@as(u64, 0xABCDEF0123456789), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[3]);
+}
+
+test "U256 irsh - shift by 256 or more clears value" {
+    var z = U256.initZero();
+    z.limbs[0] = 0xFFFFFFFFFFFFFFFF;
+    z.limbs[1] = 0xFFFFFFFFFFFFFFFF;
+    z.limbs[2] = 0xFFFFFFFFFFFFFFFF;
+    z.limbs[3] = 0xFFFFFFFFFFFFFFFF;
+    _ = z.irsh(256);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[3]);
+}
+
+test "U256 irsh - partial limb shift" {
+    var z = U256.initZero();
+    z.limbs[0] = 0xF0F0F0F0F0F0F0F0;
+    _ = z.irsh(4);
+    // 0xF0F0F0F0F0F0F0F0 >> 4 = 0x0F0F0F0F0F0F0F0F
+    try std.testing.expectEqual(@as(u64, 0x0F0F0F0F0F0F0F0F), z.limbs[0]);
+}
+
+test "U256 srsh - zero shift positive" {
+    const x = U256.init(42);
+    var z = U256.initZero();
+    _ = z.srsh(x, 0);
+    try std.testing.expectEqual(@as(u64, 42), z.limbs[0]);
+}
+
+test "U256 srsh - zero shift negative" {
+    var x = U256.initZero();
+    x.limbs[3] = 0xFFFFFFFFFFFFFFFF; // Negative number
+    x.limbs[0] = 42;
+    var z = U256.initZero();
+    _ = z.srsh(x, 0);
+    try std.testing.expectEqual(@as(u64, 42), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[3]);
+}
+
+test "U256 srsh - positive number behaves like rsh" {
+    const x = U256.init(16);
+    var z = U256.initZero();
+    _ = z.srsh(x, 2);
+    // 16 >> 2 = 4 (positive number)
+    try std.testing.expectEqual(@as(u64, 4), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[3]);
+}
+
+test "U256 srsh - negative number by 1" {
+    var x = U256.initZero();
+    x.limbs[3] = 0xFFFFFFFFFFFFFFFF;
+    x.limbs[2] = 0xFFFFFFFFFFFFFFFF;
+    x.limbs[1] = 0xFFFFFFFFFFFFFFFF;
+    x.limbs[0] = 0xFFFFFFFFFFFFFFFE; // -2 in two's complement
+    var z = U256.initZero();
+    _ = z.srsh(x, 1);
+    // -2 >> 1 = -1 (sign extends with 1s)
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[3]);
+}
+
+test "U256 srsh - negative by 64" {
+    var x = U256.initZero();
+    x.limbs[3] = 0x8000000000000000; // MSB set (negative)
+    x.limbs[1] = 0x1234567890ABCDEF;
+    var z = U256.initZero();
+    _ = z.srsh(x, 64);
+    // Shift right by 64: limbs[1]->limbs[0], limbs[2]->limbs[1], limbs[3]->limbs[2], 0xFFFF...->limbs[3]
+    try std.testing.expectEqual(@as(u64, 0x1234567890ABCDEF), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0x8000000000000000), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[3]);
+}
+
+test "U256 srsh - negative by 128" {
+    var x = U256.initZero();
+    x.limbs[3] = 0x8000000000000000; // MSB set (negative)
+    x.limbs[2] = 0xABCDEF0123456789;
+    var z = U256.initZero();
+    _ = z.srsh(x, 128);
+    // Shift right by 128, limbs[2] -> limbs[0]
+    try std.testing.expectEqual(@as(u64, 0xABCDEF0123456789), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0x8000000000000000), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[3]);
+}
+
+test "U256 srsh - negative by 192" {
+    var x = U256.initZero();
+    x.limbs[3] = 0x8000000000000000; // MSB set (negative)
+    var z = U256.initZero();
+    _ = z.srsh(x, 192);
+    // Shift right by 192, limbs[3] -> limbs[0]
+    try std.testing.expectEqual(@as(u64, 0x8000000000000000), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[3]);
+}
+
+test "U256 srsh - negative by 255" {
+    var x = U256.initZero();
+    x.limbs[3] = 0x8000000000000000; // MSB set (negative)
+    var z = U256.initZero();
+    _ = z.srsh(x, 255);
+    // Almost all bits shifted out, but sign extends
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[3]);
+}
+
+test "U256 srsh - negative by 256 or more" {
+    var x = U256.initZero();
+    x.limbs[3] = 0xFFFFFFFFFFFFFFFF; // Negative
+    x.limbs[0] = 0x1234567890ABCDEF;
+    var z = U256.initZero();
+    _ = z.srsh(x, 256);
+    // All bits shifted out, fills with 1s (negative)
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[3]);
+}
+
+test "U256 srsh - positive by 256 or more" {
+    const x = U256.init(0x1234567890ABCDEF);
+    var z = U256.initZero();
+    _ = z.srsh(x, 300);
+    // All bits shifted out, fills with 0s (positive)
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[3]);
+}
+
+test "U256 srsh - chaining" {
+    var z = U256.initZero();
+    z.limbs[3] = 0x8000000000000000; // Negative (MSB set)
+    var z2 = U256.initZero();
+    _ = z2.srsh(z, 4);
+    // After first shift by 4: top nibble extends with 1s
+    // 0x8000000000000000 >> 4 = 0xF800000000000000
+    try std.testing.expectEqual(@as(u64, 0xF800000000000000), z2.limbs[3]);
+
+    var z3 = U256.initZero();
+    _ = z3.srsh(z2, 4);
+    // After second shift by 4: top nibble extends with 1s again
+    // 0xF800000000000000 >> 4 = 0xFF80000000000000
+    try std.testing.expectEqual(@as(u64, 0xFF80000000000000), z3.limbs[3]);
+}
+
+test "U256 srsh - small negative shift" {
+    var x = U256.initZero();
+    x.limbs[3] = 0xF000000000000000; // Negative (top 4 bits set)
+    x.limbs[0] = 0x00000000000000FF;
+    var z = U256.initZero();
+    _ = z.srsh(x, 4);
+    // Shift right by 4 bits, sign extends
+    // limbs[0]: 0xFF >> 4 = 0x0F
+    // limbs[3]: 0xF000000000000000 >> 4 | (0xFFFFFFFFFFFFFFFF << 60) = 0xFF00000000000000
+    try std.testing.expectEqual(@as(u64, 0x0F), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0xFF00000000000000), z.limbs[3]);
+}
+
+test "U256 iSRsh - positive number simple shift" {
+    var z = U256.init(64);
+    _ = z.iSRsh(2);
+    // 64 >> 2 = 16
+    try std.testing.expectEqual(@as(u64, 16), z.limbs[0]);
+}
+
+test "U256 iSRsh - zero shift" {
+    var z = U256.init(100);
+    _ = z.iSRsh(0);
+    try std.testing.expectEqual(@as(u64, 100), z.limbs[0]);
+}
+
+test "U256 iSRsh - negative number by 1" {
+    var z = U256.initZero();
+    z.limbs[3] = 0x8000000000000000; // MSB set (negative)
+    z.limbs[0] = 0;
+    _ = z.iSRsh(1);
+    // Sign extends with 1s
+    // limbs[3] should have sign bit preserved and extended
+    try std.testing.expectEqual(@as(u64, 0xC000000000000000), z.limbs[3]);
+}
+
+test "U256 iSRsh - negative number by 4" {
+    var z = U256.initZero();
+    z.limbs[3] = 0xF000000000000000; // Negative (top 4 bits set)
+    z.limbs[0] = 0x00000000000000F0;
+    _ = z.iSRsh(4);
+    // Shift right by 4 bits with sign extension
+    try std.testing.expectEqual(@as(u64, 0x0F), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0xFF00000000000000), z.limbs[3]);
+}
+
+test "U256 iSRsh - negative by 64" {
+    var z = U256.initZero();
+    z.limbs[3] = 0x8000000000000000; // MSB set
+    z.limbs[2] = 0x0000000000000001;
+    _ = z.iSRsh(64);
+    // limbs shift right by 64, sign extends
+    try std.testing.expectEqual(@as(u64, 0x0000000000000001), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[3]); // Sign extended
+}
+
+test "U256 iSRsh - negative by 128" {
+    var z = U256.initZero();
+    z.limbs[3] = 0x8000000000000000;
+    z.limbs[2] = 0x1234567890ABCDEF;
+    _ = z.iSRsh(128);
+    // Top 128 bits shift to bottom 128 bits, sign extends
+    try std.testing.expectEqual(@as(u64, 0x1234567890ABCDEF), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[3]);
+}
+
+test "U256 iSRsh - negative by 256 sets all ones" {
+    var z = U256.initZero();
+    z.limbs[3] = 0x8000000000000000; // Negative
+    _ = z.iSRsh(256);
+    // Should be all 1s
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[3]);
+}
+
+test "U256 iSRsh - positive by 256 clears" {
+    var z = U256.init(12345);
+    _ = z.iSRsh(256);
+    // Positive number shifted by >= 256 becomes 0
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[3]);
+}
+
+test "U256 iSRsh - chaining operations" {
+    var z = U256.init(256);
+    _ = z.iSRsh(2);
+    _ = z.iSRsh(2);
+    // 256 >> 2 = 64, then 64 >> 2 = 16
+    try std.testing.expectEqual(@as(u64, 16), z.limbs[0]);
+}
+
+test "U256 iSRsh - positive behaves like irsh" {
+    var z1 = U256.init(1000);
+    var z2 = U256.init(1000);
+    _ = z1.iSRsh(5);
+    _ = z2.irsh(5);
+    // For positive numbers, signed and unsigned shifts should be the same
+    try std.testing.expectEqual(z2.limbs[0], z1.limbs[0]);
+    try std.testing.expectEqual(z2.limbs[1], z1.limbs[1]);
+    try std.testing.expectEqual(z2.limbs[2], z1.limbs[2]);
+    try std.testing.expectEqual(z2.limbs[3], z1.limbs[3]);
+}
+
+test "U256 not - all zeros" {
+    const x = U256.initZero();
+    var z = U256.initZero();
+    _ = z.not(x);
+    // NOT 0 = all 1s
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[3]);
+}
+
+test "U256 not - all ones" {
+    var x = U256.initZero();
+    x.limbs[0] = 0xFFFFFFFFFFFFFFFF;
+    x.limbs[1] = 0xFFFFFFFFFFFFFFFF;
+    x.limbs[2] = 0xFFFFFFFFFFFFFFFF;
+    x.limbs[3] = 0xFFFFFFFFFFFFFFFF;
+    var z = U256.initZero();
+    _ = z.not(x);
+    // NOT all 1s = all 0s
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[3]);
+}
+
+test "U256 not - single bit" {
+    const x = U256.init(1);
+    var z = U256.initZero();
+    _ = z.not(x);
+    // NOT 1 = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFE
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFE), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[3]);
+}
+
+test "U256 not - alternating pattern" {
+    var x = U256.initZero();
+    x.limbs[0] = 0xAAAAAAAAAAAAAAAA; // 10101010...
+    x.limbs[1] = 0x5555555555555555; // 01010101...
+    x.limbs[2] = 0xAAAAAAAAAAAAAAAA;
+    x.limbs[3] = 0x5555555555555555;
+    var z = U256.initZero();
+    _ = z.not(x);
+    // NOT flips all bits
+    try std.testing.expectEqual(@as(u64, 0x5555555555555555), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0xAAAAAAAAAAAAAAAA), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0x5555555555555555), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0xAAAAAAAAAAAAAAAA), z.limbs[3]);
+}
+
+test "U256 not - mixed pattern" {
+    var x = U256.initZero();
+    x.limbs[0] = 0x1234567890ABCDEF;
+    x.limbs[1] = 0xFEDCBA0987654321;
+    x.limbs[2] = 0x0F0F0F0FF0F0F0F0;
+    x.limbs[3] = 0xF0F0F0F00F0F0F0F;
+    var z = U256.initZero();
+    _ = z.not(x);
+    // NOT flips each bit
+    try std.testing.expectEqual(@as(u64, 0xEDCBA9876F543210), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0x012345F6789ABCDE), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0xF0F0F0F00F0F0F0F), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0x0F0F0F0FF0F0F0F0), z.limbs[3]);
+}
+
+test "U256 not - double NOT returns original" {
+    var x = U256.initZero();
+    x.limbs[0] = 0x1234567890ABCDEF;
+    x.limbs[1] = 0xFEDCBA0987654321;
+    x.limbs[2] = 0xABCDEF0123456789;
+    x.limbs[3] = 0x9876543210FEDCBA;
+    var z = U256.initZero();
+    _ = z.not(x);
+    var z2 = U256.initZero();
+    _ = z2.not(z);
+    // NOT(NOT(x)) = x
+    try std.testing.expectEqual(x.limbs[0], z2.limbs[0]);
+    try std.testing.expectEqual(x.limbs[1], z2.limbs[1]);
+    try std.testing.expectEqual(x.limbs[2], z2.limbs[2]);
+    try std.testing.expectEqual(x.limbs[3], z2.limbs[3]);
+}
+
+test "U256 not - chaining (in-place)" {
+    var z = U256.init(42);
+    const z_copy = z;
+    _ = z.not(z_copy);
+    // NOT 42 = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFD5
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFD5), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[1]);
+}
+
+test "U256 or_ - both zeros" {
+    const x = U256.initZero();
+    const y = U256.initZero();
+    var z = U256.initZero();
+    _ = z.or_(x, y);
+    // 0 | 0 = 0
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[3]);
+}
+
+test "U256 or_ - one operand zero" {
+    const x = U256.init(42);
+    const y = U256.initZero();
+    var z = U256.initZero();
+    _ = z.or_(x, y);
+    // 42 | 0 = 42
+    try std.testing.expectEqual(@as(u64, 42), z.limbs[0]);
+}
+
+test "U256 or_ - simple values" {
+    var x = U256.initZero();
+    var y = U256.initZero();
+    x.limbs[0] = 0b1010;
+    y.limbs[0] = 0b1100;
+    var z = U256.initZero();
+    _ = z.or_(x, y);
+    // 1010 | 1100 = 1110 (14)
+    try std.testing.expectEqual(@as(u64, 0b1110), z.limbs[0]);
+}
+
+test "U256 or_ - all ones" {
+    var x = U256.initZero();
+    x.limbs[0] = 0xFFFFFFFFFFFFFFFF;
+    x.limbs[1] = 0xFFFFFFFFFFFFFFFF;
+    x.limbs[2] = 0xFFFFFFFFFFFFFFFF;
+    x.limbs[3] = 0xFFFFFFFFFFFFFFFF;
+    const y = U256.init(42);
+    var z = U256.initZero();
+    _ = z.or_(x, y);
+    // All 1s OR anything = all 1s
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[3]);
+}
+
+test "U256 or_ - multi-limb" {
+    var x = U256.initZero();
+    var y = U256.initZero();
+    x.limbs[0] = 0xF0F0F0F0F0F0F0F0;
+    x.limbs[1] = 0x0F0F0F0F0F0F0F0F;
+    y.limbs[0] = 0x0F0F0F0F0F0F0F0F;
+    y.limbs[1] = 0xF0F0F0F0F0F0F0F0;
+    var z = U256.initZero();
+    _ = z.or_(x, y);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[1]);
+}
+
+test "U256 and_ - both zeros" {
+    const x = U256.initZero();
+    const y = U256.initZero();
+    var z = U256.initZero();
+    _ = z.and_(x, y);
+    // 0 & 0 = 0
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[3]);
+}
+
+test "U256 and_ - one operand zero" {
+    const x = U256.init(42);
+    const y = U256.initZero();
+    var z = U256.initZero();
+    _ = z.and_(x, y);
+    // 42 & 0 = 0
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[0]);
+}
+
+test "U256 and_ - simple values" {
+    var x = U256.initZero();
+    var y = U256.initZero();
+    x.limbs[0] = 0b1010;
+    y.limbs[0] = 0b1100;
+    var z = U256.initZero();
+    _ = z.and_(x, y);
+    // 1010 & 1100 = 1000 (8)
+    try std.testing.expectEqual(@as(u64, 0b1000), z.limbs[0]);
+}
+
+test "U256 and_ - all ones with value" {
+    var x = U256.initZero();
+    x.limbs[0] = 0xFFFFFFFFFFFFFFFF;
+    x.limbs[1] = 0xFFFFFFFFFFFFFFFF;
+    x.limbs[2] = 0xFFFFFFFFFFFFFFFF;
+    x.limbs[3] = 0xFFFFFFFFFFFFFFFF;
+    const y = U256.init(42);
+    var z = U256.initZero();
+    _ = z.and_(x, y);
+    // All 1s AND value = value
+    try std.testing.expectEqual(@as(u64, 42), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+}
+
+test "U256 and_ - multi-limb" {
+    var x = U256.initZero();
+    var y = U256.initZero();
+    x.limbs[0] = 0xFFFFFFFFFFFFFFFF;
+    x.limbs[1] = 0xF0F0F0F0F0F0F0F0;
+    y.limbs[0] = 0x0F0F0F0F0F0F0F0F;
+    y.limbs[1] = 0xFFFFFFFFFFFFFFFF;
+    var z = U256.initZero();
+    _ = z.and_(x, y);
+    try std.testing.expectEqual(@as(u64, 0x0F0F0F0F0F0F0F0F), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0xF0F0F0F0F0F0F0F0), z.limbs[1]);
+}
+
+test "U256 and_ - masking operation" {
+    var x = U256.initZero();
+    var mask = U256.initZero();
+    x.limbs[0] = 0x123456789ABCDEF0;
+    mask.limbs[0] = 0x00000000FFFFFFFF; // Mask lower 32 bits
+    var z = U256.initZero();
+    _ = z.and_(x, mask);
+    try std.testing.expectEqual(@as(u64, 0x9ABCDEF0), z.limbs[0]);
+}
+
+test "U256 xor - both zeros" {
+    const x = U256.initZero();
+    const y = U256.initZero();
+    var z = U256.initZero();
+    _ = z.xor(x, y);
+    // 0 ^ 0 = 0
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[3]);
+}
+
+test "U256 xor - one operand zero" {
+    const x = U256.init(42);
+    const y = U256.initZero();
+    var z = U256.initZero();
+    _ = z.xor(x, y);
+    // 42 ^ 0 = 42
+    try std.testing.expectEqual(@as(u64, 42), z.limbs[0]);
+}
+
+test "U256 xor - simple values" {
+    var x = U256.initZero();
+    var y = U256.initZero();
+    x.limbs[0] = 0b1010;
+    y.limbs[0] = 0b1100;
+    var z = U256.initZero();
+    _ = z.xor(x, y);
+    // 1010 ^ 1100 = 0110 (6)
+    try std.testing.expectEqual(@as(u64, 0b0110), z.limbs[0]);
+}
+
+test "U256 xor - same value returns zero" {
+    const x = U256.init(12345);
+    const y = U256.init(12345);
+    var z = U256.initZero();
+    _ = z.xor(x, y);
+    // value ^ value = 0
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[3]);
+}
+
+test "U256 xor - all ones" {
+    var x = U256.initZero();
+    x.limbs[0] = 0xFFFFFFFFFFFFFFFF;
+    x.limbs[1] = 0xFFFFFFFFFFFFFFFF;
+    x.limbs[2] = 0xFFFFFFFFFFFFFFFF;
+    x.limbs[3] = 0xFFFFFFFFFFFFFFFF;
+    const y = U256.init(42);
+    var z = U256.initZero();
+    _ = z.xor(x, y);
+    // All 1s XOR value = NOT value (in lower limb)
+    try std.testing.expectEqual(@as(u64, ~@as(u64, 42)), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[1]);
+}
+
+test "U256 xor - multi-limb" {
+    var x = U256.initZero();
+    var y = U256.initZero();
+    x.limbs[0] = 0xF0F0F0F0F0F0F0F0;
+    x.limbs[1] = 0x0F0F0F0F0F0F0F0F;
+    y.limbs[0] = 0x0F0F0F0F0F0F0F0F;
+    y.limbs[1] = 0x0F0F0F0F0F0F0F0F;
+    var z = U256.initZero();
+    _ = z.xor(x, y);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+}
+
+test "U256 xor - double XOR returns original" {
+    const x = U256.init(12345);
+    const y = U256.init(67890);
+    var z = U256.initZero();
+    _ = z.xor(x, y);
+    _ = z.xor(z, y); // XOR with y again
+    // (x ^ y) ^ y = x
+    try std.testing.expectEqual(@as(u64, 12345), z.limbs[0]);
+}
+
+test "U256 bitwise - combined operations" {
+    // Test: (x | y) & (x ^ y) should equal (x ^ y)
+    var x = U256.initZero();
+    var y = U256.initZero();
+    x.limbs[0] = 0b10101010;
+    y.limbs[0] = 0b11001100;
+
+    var or_result = U256.initZero();
+    var xor_result = U256.initZero();
+    var and_result = U256.initZero();
+
+    _ = or_result.or_(x, y);
+    _ = xor_result.xor(x, y);
+    _ = and_result.and_(or_result, xor_result);
+
+    try std.testing.expectEqual(xor_result.limbs[0], and_result.limbs[0]);
+}
+
+test "U256 slt - both positive" {
+    const a = U256.init(10);
+    const b = U256.init(20);
+    try std.testing.expectEqual(true, a.slt(b)); // 10 < 20
+    try std.testing.expectEqual(false, b.slt(a)); // 20 < 10 is false
+}
+
+test "U256 slt - both negative" {
+    var a = U256.initZero();
+    a.limbs[3] = 0xFFFFFFFFFFFFFFFF;
+    a.limbs[0] = 0xFFFFFFFFFFFFFFF6; // -10 in two's complement
+    var b = U256.initZero();
+    b.limbs[3] = 0xFFFFFFFFFFFFFFFF;
+    b.limbs[0] = 0xFFFFFFFFFFFFFFEC; // -20 in two's complement
+    try std.testing.expectEqual(false, a.slt(b)); // -10 < -20 is false
+    try std.testing.expectEqual(true, b.slt(a)); // -20 < -10 is true
+}
+
+test "U256 slt - negative vs positive" {
+    var a = U256.initZero();
+    a.limbs[3] = 0xFFFFFFFFFFFFFFFF; // Negative
+    const b = U256.init(10); // Positive
+    try std.testing.expectEqual(true, a.slt(b)); // negative < positive
+    try std.testing.expectEqual(false, b.slt(a)); // positive < negative is false
+}
+
+test "U256 slt - zero comparisons" {
+    const zero = U256.initZero();
+    const pos = U256.init(10);
+    var neg = U256.initZero();
+    neg.limbs[3] = 0x8000000000000000; // Negative (MSB set)
+
+    try std.testing.expectEqual(false, zero.slt(zero)); // 0 < 0 is false
+    try std.testing.expectEqual(true, zero.slt(pos)); // 0 < 10
+    try std.testing.expectEqual(true, neg.slt(zero)); // negative < 0
+    try std.testing.expectEqual(false, pos.slt(zero)); // 10 < 0 is false
+}
+
+test "U256 slt - equal values" {
+    const a = U256.init(42);
+    const b = U256.init(42);
+    try std.testing.expectEqual(false, a.slt(b)); // 42 < 42 is false
+}
+
+test "U256 sgt - both positive" {
+    const a = U256.init(20);
+    const b = U256.init(10);
+    try std.testing.expectEqual(true, a.sgt(b)); // 20 > 10
+    try std.testing.expectEqual(false, b.sgt(a)); // 10 > 20 is false
+}
+
+test "U256 sgt - both negative" {
+    var a = U256.initZero();
+    a.limbs[3] = 0xFFFFFFFFFFFFFFFF;
+    a.limbs[0] = 0xFFFFFFFFFFFFFFF6; // -10 in two's complement
+    var b = U256.initZero();
+    b.limbs[3] = 0xFFFFFFFFFFFFFFFF;
+    b.limbs[0] = 0xFFFFFFFFFFFFFFEC; // -20 in two's complement
+    try std.testing.expectEqual(true, a.sgt(b)); // -10 > -20
+    try std.testing.expectEqual(false, b.sgt(a)); // -20 > -10 is false
+}
+
+test "U256 sgt - positive vs negative" {
+    const a = U256.init(10); // Positive
+    var b = U256.initZero();
+    b.limbs[3] = 0xFFFFFFFFFFFFFFFF; // Negative
+    try std.testing.expectEqual(true, a.sgt(b)); // positive > negative
+    try std.testing.expectEqual(false, b.sgt(a)); // negative > positive is false
+}
+
+test "U256 sgt - zero comparisons" {
+    const zero = U256.initZero();
+    const pos = U256.init(10);
+    var neg = U256.initZero();
+    neg.limbs[3] = 0x8000000000000000; // Negative
+
+    try std.testing.expectEqual(false, zero.sgt(zero)); // 0 > 0 is false
+    try std.testing.expectEqual(false, zero.sgt(pos)); // 0 > 10 is false
+    try std.testing.expectEqual(false, neg.sgt(zero)); // negative > 0 is false
+    try std.testing.expectEqual(true, pos.sgt(zero)); // 10 > 0
+}
+
+test "U256 sgt - equal values" {
+    const a = U256.init(42);
+    const b = U256.init(42);
+    try std.testing.expectEqual(false, a.sgt(b)); // 42 > 42 is false
+}
+
+test "U256 slt and sgt - large values" {
+    var a = U256.initZero();
+    a.limbs[3] = 0x7FFFFFFFFFFFFFFF; // Maximum positive (MSB = 0)
+    var b = U256.initZero();
+    b.limbs[3] = 0x8000000000000000; // Minimum negative (MSB = 1)
+
+    try std.testing.expectEqual(false, a.slt(b)); // max positive < min negative is false
+    try std.testing.expectEqual(true, a.sgt(b)); // max positive > min negative
+}
+
+test "U256 cmp - equal values" {
+    const a = U256.init(42);
+    const b = U256.init(42);
+    try std.testing.expectEqual(@as(i8, 0), a.cmp(b));
+}
+
+test "U256 cmp - less than" {
+    const a = U256.init(10);
+    const b = U256.init(20);
+    try std.testing.expectEqual(@as(i8, -1), a.cmp(b));
+}
+
+test "U256 cmp - greater than" {
+    const a = U256.init(20);
+    const b = U256.init(10);
+    try std.testing.expectEqual(@as(i8, 1), a.cmp(b));
+}
+
+test "U256 cmp - zero comparison" {
+    const zero = U256.initZero();
+    const non_zero = U256.init(1);
+    try std.testing.expectEqual(@as(i8, 0), zero.cmp(zero));
+    try std.testing.expectEqual(@as(i8, -1), zero.cmp(non_zero));
+    try std.testing.expectEqual(@as(i8, 1), non_zero.cmp(zero));
+}
+
+test "U256 cmp - multi-limb values" {
+    var a = U256.initZero();
+    a.limbs[0] = 0x1234567890ABCDEF;
+    a.limbs[1] = 0x1111111111111111;
+    var b = U256.initZero();
+    b.limbs[0] = 0x1234567890ABCDEF;
+    b.limbs[1] = 0x2222222222222222;
+
+    try std.testing.expectEqual(@as(i8, -1), a.cmp(b)); // a < b (different in limbs[1])
+    try std.testing.expectEqual(@as(i8, 1), b.cmp(a)); // b > a
+}
+
+test "U256 cmp - high limb difference" {
+    var a = U256.initZero();
+    a.limbs[0] = 0xFFFFFFFFFFFFFFFF;
+    a.limbs[1] = 0xFFFFFFFFFFFFFFFF;
+    a.limbs[2] = 0xFFFFFFFFFFFFFFFF;
+    a.limbs[3] = 0x0000000000000001;
+
+    var b = U256.initZero();
+    b.limbs[0] = 0x0000000000000000;
+    b.limbs[1] = 0x0000000000000000;
+    b.limbs[2] = 0x0000000000000000;
+    b.limbs[3] = 0x0000000000000002;
+
+    try std.testing.expectEqual(@as(i8, -1), a.cmp(b)); // a < b (high limb differs)
+}
+
+test "U256 cmp - maximum values" {
+    var max = U256.initZero();
+    max.limbs[0] = 0xFFFFFFFFFFFFFFFF;
+    max.limbs[1] = 0xFFFFFFFFFFFFFFFF;
+    max.limbs[2] = 0xFFFFFFFFFFFFFFFF;
+    max.limbs[3] = 0xFFFFFFFFFFFFFFFF;
+
+    var almost_max = U256.initZero();
+    almost_max.limbs[0] = 0xFFFFFFFFFFFFFFFE;
+    almost_max.limbs[1] = 0xFFFFFFFFFFFFFFFF;
+    almost_max.limbs[2] = 0xFFFFFFFFFFFFFFFF;
+    almost_max.limbs[3] = 0xFFFFFFFFFFFFFFFF;
+
+    try std.testing.expectEqual(@as(i8, 0), max.cmp(max));
+    try std.testing.expectEqual(@as(i8, 1), max.cmp(almost_max));
+    try std.testing.expectEqual(@as(i8, -1), almost_max.cmp(max));
+}
+
+test "U256 cmpU64 - equal" {
+    const a = U256.init(42);
+    try std.testing.expectEqual(@as(i8, 0), a.cmpU64(42));
+}
+
+test "U256 cmpU64 - less than" {
+    const a = U256.init(10);
+    try std.testing.expectEqual(@as(i8, -1), a.cmpU64(20));
+}
+
+test "U256 cmpU64 - greater than" {
+    const a = U256.init(100);
+    try std.testing.expectEqual(@as(i8, 1), a.cmpU64(50));
+}
+
+test "U256 cmpU64 - zero comparison" {
+    const zero = U256.initZero();
+    const one = U256.init(1);
+    try std.testing.expectEqual(@as(i8, 0), zero.cmpU64(0));
+    try std.testing.expectEqual(@as(i8, -1), zero.cmpU64(1));
+    try std.testing.expectEqual(@as(i8, 1), one.cmpU64(0));
+}
+
+test "U256 cmpU64 - multi-limb always greater" {
+    var a = U256.initZero();
+    a.limbs[0] = 1;
+    a.limbs[1] = 1; // Any upper limb non-zero means a > any u64
+    try std.testing.expectEqual(@as(i8, 1), a.cmpU64(0xFFFFFFFFFFFFFFFF));
+}
+
+test "U256 cmpU64 - maximum u64" {
+    const max_u64 = U256.init(0xFFFFFFFFFFFFFFFF);
+    try std.testing.expectEqual(@as(i8, 0), max_u64.cmpU64(0xFFFFFFFFFFFFFFFF));
+    try std.testing.expectEqual(@as(i8, 1), max_u64.cmpU64(0xFFFFFFFFFFFFFFFE));
+}
+
+test "U256 cmpU64 - edge cases" {
+    const a = U256.init(0x8000000000000000); // 2^63
+    try std.testing.expectEqual(@as(i8, 0), a.cmpU64(0x8000000000000000));
+    try std.testing.expectEqual(@as(i8, 1), a.cmpU64(0x7FFFFFFFFFFFFFFF));
+    try std.testing.expectEqual(@as(i8, -1), a.cmpU64(0x8000000000000001));
+}
+
+test "U256 setFromBig - zero" {
+    var big = try std.math.big.int.Managed.init(std.testing.allocator);
+    defer big.deinit();
+
+    var z = U256.initZero();
+    const overflow = z.setFromBig(big.toConst());
+    try std.testing.expectEqual(false, overflow);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[3]);
+}
+
+test "U256 setFromBig - small positive" {
+    var big = try std.math.big.int.Managed.init(std.testing.allocator);
+    defer big.deinit();
+    try big.set(12345);
+
+    var z = U256.initZero();
+    const overflow = z.setFromBig(big.toConst());
+    try std.testing.expectEqual(false, overflow);
+    try std.testing.expectEqual(@as(u64, 12345), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+}
+
+test "U256 setFromBig - small negative" {
+    var big = try std.math.big.int.Managed.init(std.testing.allocator);
+    defer big.deinit();
+    try big.set(-42);
+
+    var z = U256.initZero();
+    const overflow = z.setFromBig(big.toConst());
+    try std.testing.expectEqual(false, overflow);
+
+    // -42 in two's complement is 2^256 - 42
+    var expected = U256.initZero();
+    expected.limbs[0] = 0xFFFFFFFFFFFFFFD6; // -42 & 0xFFFFFFFFFFFFFFFF
+    expected.limbs[1] = 0xFFFFFFFFFFFFFFFF;
+    expected.limbs[2] = 0xFFFFFFFFFFFFFFFF;
+    expected.limbs[3] = 0xFFFFFFFFFFFFFFFF;
+
+    try std.testing.expectEqual(expected.limbs[0], z.limbs[0]);
+    try std.testing.expectEqual(expected.limbs[1], z.limbs[1]);
+    try std.testing.expectEqual(expected.limbs[2], z.limbs[2]);
+    try std.testing.expectEqual(expected.limbs[3], z.limbs[3]);
+}
+
+test "U256 setFromBig - maximum u64" {
+    var big = try std.math.big.int.Managed.init(std.testing.allocator);
+    defer big.deinit();
+    try big.set(0xFFFFFFFFFFFFFFFF);
+
+    var z = U256.initZero();
+    const overflow = z.setFromBig(big.toConst());
+    try std.testing.expectEqual(false, overflow);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+}
+
+test "U256 setFromBig - fits exactly in 256 bits" {
+    var big = try std.math.big.int.Managed.init(std.testing.allocator);
+    defer big.deinit();
+
+    // Set to 2^255 (maximum positive signed value, fits in 256 bits)
+    try big.set(1);
+    try big.shiftLeft(&big, 255);
+
+    var z = U256.initZero();
+    const overflow = z.setFromBig(big.toConst());
+    try std.testing.expectEqual(false, overflow);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0x8000000000000000), z.limbs[3]);
+}
+
+test "U256 setFromBig - overflow (too large)" {
+    var big = try std.math.big.int.Managed.init(std.testing.allocator);
+    defer big.deinit();
+
+    // Set to 2^256 (one bit too large)
+    try big.set(1);
+    try big.shiftLeft(&big, 256);
+
+    var z = U256.initZero();
+    const overflow = z.setFromBig(big.toConst());
+    try std.testing.expectEqual(true, overflow);
+    // Value should be truncated to lower 256 bits (which is 0)
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[3]);
+}
+
+test "U256 setFromBig - large negative" {
+    var big = try std.math.big.int.Managed.init(std.testing.allocator);
+    defer big.deinit();
+    try big.set(-1);
+
+    var z = U256.initZero();
+    const overflow = z.setFromBig(big.toConst());
+    try std.testing.expectEqual(false, overflow);
+
+    // -1 in two's complement is all 1s
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[3]);
+}
+
+test "U256 setFromBig - multi-limb positive" {
+    var big = try std.math.big.int.Managed.init(std.testing.allocator);
+    defer big.deinit();
+
+    // Create a value that spans multiple limbs: 0x123456789ABCDEF0_FEDCBA0987654321
+    try big.set(0x123456789ABCDEF0);
+    try big.shiftLeft(&big, 64);
+    var temp = try std.math.big.int.Managed.init(std.testing.allocator);
+    defer temp.deinit();
+    try temp.set(0xFEDCBA0987654321);
+    try big.add(&big, &temp);
+
+    var z = U256.initZero();
+    const overflow = z.setFromBig(big.toConst());
+    try std.testing.expectEqual(false, overflow);
+    try std.testing.expectEqual(@as(u64, 0xFEDCBA0987654321), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0x123456789ABCDEF0), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[3]);
+}
+
+test "U256 cmpBig - equal values" {
+    var big = try std.math.big.int.Managed.init(std.testing.allocator);
+    defer big.deinit();
+    try big.set(12345);
+
+    const z = U256.init(12345);
+    try std.testing.expectEqual(@as(i8, 0), z.cmpBig(big.toConst()));
+}
+
+test "U256 cmpBig - self less than big" {
+    var big = try std.math.big.int.Managed.init(std.testing.allocator);
+    defer big.deinit();
+    try big.set(20000);
+
+    const z = U256.init(10000);
+    try std.testing.expectEqual(@as(i8, -1), z.cmpBig(big.toConst()));
+}
+
+test "U256 cmpBig - self greater than big" {
+    var big = try std.math.big.int.Managed.init(std.testing.allocator);
+    defer big.deinit();
+    try big.set(5000);
+
+    const z = U256.init(10000);
+    try std.testing.expectEqual(@as(i8, 1), z.cmpBig(big.toConst()));
+}
+
+test "U256 cmpBig - negative big int" {
+    var big = try std.math.big.int.Managed.init(std.testing.allocator);
+    defer big.deinit();
+    try big.set(-12345);
+
+    const z = U256.init(0);
+    // Any U256 (unsigned) is greater than negative big int
+    try std.testing.expectEqual(@as(i8, 1), z.cmpBig(big.toConst()));
+}
+
+test "U256 cmpBig - zero comparison" {
+    var big = try std.math.big.int.Managed.init(std.testing.allocator);
+    defer big.deinit();
+    // big is 0 by default
+
+    const z = U256.initZero();
+    try std.testing.expectEqual(@as(i8, 0), z.cmpBig(big.toConst()));
+}
+
+test "U256 cmpBig - big int overflow (too large)" {
+    var big = try std.math.big.int.Managed.init(std.testing.allocator);
+    defer big.deinit();
+
+    // Create a value larger than 2^256
+    try big.set(1);
+    try big.shiftLeft(&big, 257);
+
+    var z = U256.initZero();
+    z.limbs[0] = 0xFFFFFFFFFFFFFFFF;
+    z.limbs[1] = 0xFFFFFFFFFFFFFFFF;
+    z.limbs[2] = 0xFFFFFFFFFFFFFFFF;
+    z.limbs[3] = 0xFFFFFFFFFFFFFFFF;
+
+    // z < big (big is too large)
+    try std.testing.expectEqual(@as(i8, -1), z.cmpBig(big.toConst()));
+}
+
+test "U256 cmpBig - multi-limb equal" {
+    var big = try std.math.big.int.Managed.init(std.testing.allocator);
+    defer big.deinit();
+
+    // Create a value: 0x123456789ABCDEF0_FEDCBA0987654321
+    try big.set(0x123456789ABCDEF0);
+    try big.shiftLeft(&big, 64);
+    var temp = try std.math.big.int.Managed.init(std.testing.allocator);
+    defer temp.deinit();
+    try temp.set(0xFEDCBA0987654321);
+    try big.add(&big, &temp);
+
+    var z = U256.initZero();
+    z.limbs[0] = 0xFEDCBA0987654321;
+    z.limbs[1] = 0x123456789ABCDEF0;
+
+    try std.testing.expectEqual(@as(i8, 0), z.cmpBig(big.toConst()));
+}
+
+test "U256 cmpBig - fits exactly at 256-bit boundary" {
+    var big = try std.math.big.int.Managed.init(std.testing.allocator);
+    defer big.deinit();
+
+    // Set to 2^255
+    try big.set(1);
+    try big.shiftLeft(&big, 255);
+
+    var z = U256.initZero();
+    z.limbs[3] = 0x8000000000000000;
+
+    try std.testing.expectEqual(@as(i8, 0), z.cmpBig(big.toConst()));
+}
+
+test "U256 cmpBig - large negative vs zero" {
+    var big = try std.math.big.int.Managed.init(std.testing.allocator);
+    defer big.deinit();
+    try big.set(-1000000);
+
+    const z = U256.initZero();
+    // 0 > -1000000
+    try std.testing.expectEqual(@as(i8, 1), z.cmpBig(big.toConst()));
+}
+
+test "U256 ltU64 - less than" {
+    const z = U256.init(100);
+    try std.testing.expectEqual(true, z.ltU64(200));
+    try std.testing.expectEqual(false, z.ltU64(50));
+}
+
+test "U256 ltU64 - equal" {
+    const z = U256.init(100);
+    try std.testing.expectEqual(false, z.ltU64(100));
+}
+
+test "U256 ltU64 - multi-limb always false" {
+    var z = U256.initZero();
+    z.limbs[0] = 1;
+    z.limbs[1] = 1; // Any upper limb non-zero means z >= any u64
+    try std.testing.expectEqual(false, z.ltU64(0xFFFFFFFFFFFFFFFF));
+}
+
+test "U256 ltU64 - zero comparison" {
+    const zero = U256.initZero();
+    try std.testing.expectEqual(false, zero.ltU64(0));
+    try std.testing.expectEqual(true, zero.ltU64(1));
+}
+
+test "U256 ltU64 - maximum u64" {
+    const max = U256.init(0xFFFFFFFFFFFFFFFF);
+    try std.testing.expectEqual(false, max.ltU64(0xFFFFFFFFFFFFFFFF));
+    try std.testing.expectEqual(false, max.ltU64(0xFFFFFFFFFFFFFFFE));
+}
+
+test "U256 gtU64 - greater than" {
+    const z = U256.init(200);
+    try std.testing.expectEqual(true, z.gtU64(100));
+    try std.testing.expectEqual(false, z.gtU64(300));
+}
+
+test "U256 gtU64 - equal" {
+    const z = U256.init(100);
+    try std.testing.expectEqual(false, z.gtU64(100));
+}
+
+test "U256 gtU64 - multi-limb always true" {
+    var z = U256.initZero();
+    z.limbs[0] = 0;
+    z.limbs[1] = 1; // Any upper limb non-zero means z > any u64
+    try std.testing.expectEqual(true, z.gtU64(0xFFFFFFFFFFFFFFFF));
+}
+
+test "U256 gtU64 - zero comparison" {
+    const zero = U256.initZero();
+    try std.testing.expectEqual(false, zero.gtU64(0));
+    try std.testing.expectEqual(false, zero.gtU64(1));
+}
+
+test "U256 gtU64 - maximum u64" {
+    const max = U256.init(0xFFFFFFFFFFFFFFFF);
+    try std.testing.expectEqual(false, max.gtU64(0xFFFFFFFFFFFFFFFF));
+    try std.testing.expectEqual(true, max.gtU64(0xFFFFFFFFFFFFFFFE));
+}
+
+test "U256 gtU64 - edge case at u64 boundary" {
+    var z = U256.initZero();
+    z.limbs[0] = 0xFFFFFFFFFFFFFFFF;
+    z.limbs[1] = 0;
+    try std.testing.expectEqual(false, z.gtU64(0xFFFFFFFFFFFFFFFF));
+
+    z.limbs[1] = 1;
+    try std.testing.expectEqual(true, z.gtU64(0xFFFFFFFFFFFFFFFF));
+}
+
+test "U256 setAllOne - all bits set" {
+    var z = U256.initZero();
+    _ = z.setAllOne();
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[3]);
+}
+
+test "U256 setAllOne - chaining" {
+    var z = U256.init(42);
+    _ = z.setAllOne();
+    // Should be all 1s now
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[3]);
+}
+
+test "U256 setAllOne - is maximum value" {
+    var z = U256.initZero();
+    _ = z.setAllOne();
+    // This is 2^256 - 1, the maximum U256 value
+    // Adding 1 should overflow to 0
+    var result = U256.initZero();
+    _ = result.add(z, U256.init(1));
+    // Result should be all zeros (overflow wraps to 0)
+    try std.testing.expectEqual(@as(u64, 0), result.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), result.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0), result.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0), result.limbs[3]);
+}
+
+test "U256 setAllOne - NOT of zero" {
+    var z = U256.initZero();
+    _ = z.setAllOne();
+
+    var expected = U256.initZero();
+    _ = expected.not(U256.initZero());
+
+    try std.testing.expectEqual(expected.limbs[0], z.limbs[0]);
+    try std.testing.expectEqual(expected.limbs[1], z.limbs[1]);
+    try std.testing.expectEqual(expected.limbs[2], z.limbs[2]);
+    try std.testing.expectEqual(expected.limbs[3], z.limbs[3]);
+}
+
 test "U256 reciprocal - returns zero when m[3] == 0" {
     var m = U256.initZero();
     m.limbs[0] = 0x1234567890ABCDEF;
@@ -5702,7 +7174,7 @@ test "U256 reciprocal - returns zero when m[3] == 0" {
     m.limbs[2] = 0x123456789ABCDEF0;
     m.limbs[3] = 0; // Top limb is zero
 
-    const mu = U256.reciprocal(m);
+    const mu = modular.reciprocal(m);
 
     // Should return all zeros
     try std.testing.expectEqual(@as(u64, 0), mu[0]);
@@ -5721,7 +7193,7 @@ test "U256 reciprocal - power of 2" {
     m.limbs[2] = 0;
     m.limbs[3] = 0x8000000000000000; // 2^255
 
-    const mu = U256.reciprocal(m);
+    const mu = modular.reciprocal(m);
 
     // For a power of 2, the reciprocal should be computed
     // The result should not be all zeros
@@ -5739,7 +7211,7 @@ test "U256 reciprocal - non-power of 2" {
     m.limbs[2] = 0;
     m.limbs[3] = 0x8000000000000000; // Large non-power-of-2 value
 
-    const mu = U256.reciprocal(m);
+    const mu = modular.reciprocal(m);
 
     // The reciprocal should be computed (non-zero result)
     // Currently returns all zeros (stubbed implementation)
