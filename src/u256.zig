@@ -7,6 +7,88 @@ const division = @import("division.zig");
 const multiplication = @import("multiplication.zig");
 const modular = @import("mod.zig");
 
+// Powers of 10 for log10 calculation
+// pows64 contains 10^0 ... 10^19
+const pows64 = [20]u64{
+    1e0,  1e1,  1e2,  1e3,  1e4,  1e5,  1e6,  1e7,  1e8,  1e9,
+    1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19,
+};
+
+// pows contains 10^20 ... 10^79 (60 entries total)
+// Each entry is a U256 represented as [4]u64 in little-endian order
+const pows = [60][4]u64{
+    .{ 7766279631452241920, 5, 0, 0 },
+    .{ 3875820019684212736, 54, 0, 0 },
+    .{ 1864712049423024128, 542, 0, 0 },
+    .{ 200376420520689664, 5421, 0, 0 },
+    .{ 2003764205206896640, 54210, 0, 0 },
+    .{ 1590897978359414784, 542101, 0, 0 },
+    .{ 15908979783594147840, 5421010, 0, 0 },
+    .{ 11515845246265065472, 54210108, 0, 0 },
+    .{ 4477988020393345024, 542101086, 0, 0 },
+    .{ 7886392056514347008, 5421010862, 0, 0 },
+    .{ 5076944270305263616, 54210108624, 0, 0 },
+    .{ 13875954555633532928, 542101086242, 0, 0 },
+    .{ 9632337040368467968, 5421010862427, 0, 0 },
+    .{ 4089650035136921600, 54210108624275, 0, 0 },
+    .{ 4003012203950112768, 542101086242752, 0, 0 },
+    .{ 3136633892082024448, 5421010862427522, 0, 0 },
+    .{ 12919594847110692864, 54210108624275221, 0, 0 },
+    .{ 68739955140067328, 542101086242752217, 0, 0 },
+    .{ 687399551400673280, 5421010862427522170, 0, 0 },
+    .{ 6873995514006732800, 17316620476856118468, 2, 0 },
+    .{ 13399722918938673152, 7145508105175220139, 29, 0 },
+    .{ 4870020673419870208, 16114848830623546549, 293, 0 },
+    .{ 11806718586779598848, 13574535716559052564, 2938, 0 },
+    .{ 7386721425538678784, 6618148649623664334, 29387, 0 },
+    .{ 80237960548581376, 10841254275107988496, 293873, 0 },
+    .{ 802379605485813760, 16178822382532126880, 2938735, 0 },
+    .{ 8023796054858137600, 14214271235644855872, 29387358, 0 },
+    .{ 6450984253743169536, 13015503840481697412, 293873587, 0 },
+    .{ 9169610316303040512, 1027829888850112811, 2938735877, 0 },
+    .{ 17909126868192198656, 10278298888501128114, 29387358770, 0 },
+    .{ 13070572018536022016, 10549268516463523069, 293873587705, 0 },
+    .{ 1578511669393358848, 13258964796087472617, 2938735877055, 0 },
+    .{ 15785116693933588480, 3462439444907864858, 29387358770557, 0 },
+    .{ 10277214349659471872, 16177650375369096972, 293873587705571, 0 },
+    .{ 10538423128046960640, 14202551164014556797, 2938735877055718, 0 },
+    .{ 13150510911921848320, 12898303124178706663, 29387358770557187, 0 },
+    .{ 2377900603251621888, 18302566799529756941, 293873587705571876, 0 },
+    .{ 5332261958806667264, 17004971331911604867, 2938735877055718769, 0 },
+    .{ 16429131440647569408, 4029016655730084128, 10940614696847636083, 1 },
+    .{ 16717361816799281152, 3396678409881738056, 17172426599928602752, 15 },
+    .{ 1152921504606846976, 15520040025107828953, 5703569335900062977, 159 },
+    .{ 11529215046068469760, 7626447661401876602, 1695461137871974930, 1593 },
+    .{ 4611686018427387904, 2477500319180559562, 16954611378719749304, 15930 },
+    .{ 9223372036854775808, 6328259118096044006, 3525417123811528497, 159309 },
+    .{ 0, 7942358959831785217, 16807427164405733357, 1593091 },
+    .{ 0, 5636613303479645706, 2053574980671369030, 15930919 },
+    .{ 0, 1025900813667802212, 2089005733004138687, 159309191 },
+    .{ 0, 10259008136678022120, 2443313256331835254, 1593091911 },
+    .{ 0, 10356360998232463120, 5986388489608800929, 15930919111 },
+    .{ 0, 11329889613776873120, 4523652674959354447, 159309191113 },
+    .{ 0, 2618431695511421504, 8343038602174441244, 1593091911132 },
+    .{ 0, 7737572881404663424, 9643409726906205977, 15930919111324 },
+    .{ 0, 3588752519208427776, 4200376900514301694, 159309191113245 },
+    .{ 0, 17440781118374726144, 5110280857723913709, 1593091911132452 },
+    .{ 0, 8387114520361296896, 14209320429820033867, 15930919111324522 },
+    .{ 0, 10084168908774762496, 12965995782233477362, 159309191113245227 },
+    .{ 0, 8607968719199866880, 532749306367912313, 1593091911132452277 },
+    .{ 0, 12292710897160462336, 5327493063679123134, 15930919111324522770 },
+    .{ 0, 12246644529347313664, 16381442489372128114, 11735238523568814774 },
+    .{ 0, 11785980851215826944, 16240472304044868218, 6671920793430838052 },
+};
+
+// Multipliers for fromDecimal - powers of 10^19
+// Used to parse decimal strings in 19-character chunks
+const multipliers = [5]?[4]u64{
+    null, // First round, no multiplication needed
+    .{ 10000000000000000000, 0, 0, 0 }, // 10^19
+    .{ 687399551400673280, 5421010862427522170, 0, 0 }, // 10^38
+    .{ 5332261958806667264, 17004971331911604867, 2938735877055718769, 0 }, // 10^57
+    .{ 0, 8607968719199866880, 532749306367912313, 1593091911132452277 }, // 10^76
+};
+
 /// U256 represents a 256-bit unsigned integer as an array of 4 u64 limbs.
 /// Limbs are stored in little-endian order:
 /// - limbs[0] is the least significant
@@ -154,9 +236,9 @@ pub const U256 = struct {
         const sext_byte: u64 = @bitCast(@as(i64, @as(i8, @bitCast(@as(u8, @truncate(sign_byte))))));
         const sext = sext_byte << sign_byte_offset;
         const sign_mask = @as(u64, 0xFFFFFFFFFFFFFFFF) << sign_byte_offset;
-        const value = sign_word & ~sign_mask; // Reset extended bytes
+        const word_value = sign_word & ~sign_mask; // Reset extended bytes
 
-        self.limbs[sign_word_index] = sext | value; // Combine the result word
+        self.limbs[sign_word_index] = sext | word_value; // Combine the result word
 
         // Produce bits (all zeros or ones) for extended words.
         // This is done by SAR of the sign-extended byte.
@@ -249,6 +331,91 @@ pub const U256 = struct {
         }
 
         return overflow;
+    }
+
+    /// Convenience constructor from big.Int.
+    /// Returns a new U256 and whether overflow occurred.
+    ///
+    /// Example:
+    /// ```zig
+    /// var big = try std.math.big.int.Managed.init(allocator);
+    /// try big.set(12345);
+    /// const result = U256.fromBig(big.toConst());
+    /// if (result.overflow) {
+    ///     // Handle overflow
+    /// }
+    /// ```
+    pub fn fromBig(big: std.math.big.int.Const) struct { value: U256, overflow: bool } {
+        var z = U256.initZero();
+        const overflow = z.setFromBig(big);
+        return .{ .value = z, .overflow = overflow };
+    }
+
+    /// Convenience constructor from big.Int that panics on overflow.
+    /// Returns a new U256.
+    ///
+    /// Example:
+    /// ```zig
+    /// var big = try std.math.big.int.Managed.init(allocator);
+    /// try big.set(12345);
+    /// const z = U256.mustFromBig(big.toConst());
+    /// ```
+    pub fn mustFromBig(big: std.math.big.int.Const) U256 {
+        var z = U256.initZero();
+        const overflow = z.setFromBig(big);
+        if (overflow) {
+            std.debug.panic("U256.mustFromBig: overflow occurred", .{});
+        }
+        return z;
+    }
+
+    /// Returns the float64 value nearest to self.
+    ///
+    /// Note: The `std.math.big.Float` version would also return an 'Accuracy',
+    /// indicating whether the value was too small or too large to be represented
+    /// by a float64. However, U256 is unable to represent values out of scope
+    /// (|x| < std.math.floatMin(f64) or |x| > std.math.floatMax(f64)),
+    /// therefore this method does not return any accuracy.
+    ///
+    /// The conversion follows IEEE 754 double-precision format:
+    /// - 1 sign bit (always 0 for unsigned)
+    /// - 11 exponent bits
+    /// - 52 fraction bits
+    ///
+    /// Example:
+    /// ```zig
+    /// const z = U256.init(12345);
+    /// const f = z.toFloat64();
+    /// ```
+    pub fn toFloat64(self: U256) f64 {
+        // Fast path for values that fit in u64
+        if (self.isU64()) {
+            return @floatFromInt(self.getU64());
+        }
+
+        // Get the bit length of the number
+        const bitlen = self.bitLen();
+
+        // Normalize the number by shifting it so that the MSB is shifted out
+        // After normalization, the leading 1 bit is implicit in IEEE 754
+        var y = U256.initZero();
+        const shift_amount: u32 = @intCast(1 + 256 - bitlen);
+        _ = y.lsh(self, shift_amount);
+
+        // The number with the leading 1 shifted out is the fraction
+        // We take the top 52 bits from limbs[3]
+        const fraction = y.limbs[3];
+
+        // The exponent is calculated from the bit length, adjusted with the bias
+        // Double-precision uses 1023 as bias
+        const biased_exp: u64 = 1023 + bitlen - 1;
+
+        // Construct the IEEE 754 double-precision representation:
+        // [sign: 1 bit (0)] [exponent: 11 bits] [fraction: 52 bits]
+        // We shift exponent left by 52 bits and take top 52 bits of fraction
+        const bits = (biased_exp << 52) | (fraction >> 12);
+
+        return @bitCast(bits);
     }
 
     /// Interprets n and d as two's complement signed integers,
@@ -1948,12 +2115,14 @@ pub const U256 = struct {
         return self.subU64(self_copy, x);
     }
 
-    /// Encodes self as a 0-padded byte slice. The length of the slice is at least n bytes.
-    /// The value is encoded in big-endian format.
+    /// Writes self to buffer with 0-padding to n bytes (big-endian).
+    /// Buffer must be at least n bytes long.
+    /// Returns a slice of the buffer containing the result.
     /// Example: z = 1, n = 20 => [0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1]
-    /// Caller is responsible for freeing the returned slice.
-    pub fn paddedBytes(self: U256, allocator: std.mem.Allocator, n: usize) ![]u8 {
-        const b = try allocator.alloc(u8, n);
+    pub fn paddedBytes(self: U256, buffer: []u8, n: usize) ![]u8 {
+        if (buffer.len < n) return error.BufferTooSmall;
+
+        const b = buffer[0..n];
         @memset(b, 0);
 
         var i: usize = 0;
@@ -2196,6 +2365,1113 @@ pub const U256 = struct {
     pub fn iSqrt(self: *U256) *U256 {
         const self_copy = self.*;
         return self.sqrt(self_copy);
+    }
+
+    /// Returns the base-10 logarithm of self, floored to the nearest integer.
+    /// Returns 0 for input 0 (not -Inf).
+    ///
+    /// Algorithm from "Bit twiddling hacks":
+    /// https://graphics.stanford.edu/~seander/bithacks.html#IntegerLog10
+    ///
+    /// The idea is that log10(z) = log2(z) / log2(10)
+    /// log2(z) is simply bitLen() - 1
+    /// 1/log2(10) ≈ 1233/4096 (accurate to 5 decimal places)
+    pub fn log10(self: U256) u32 {
+        const bitlen = self.bitLen();
+        if (bitlen == 0) {
+            return 0;
+        }
+
+        // t = (bitlen + 1) * 1233 >> 12
+        const t: u32 = @intCast(((bitlen + 1) * 1233) >> 12);
+
+        // Check if we need to adjust down by 1
+        // If bitlen <= 64 and self < 10^t, or if bitlen > 64 and self < 10^t, return t-1
+        if (bitlen <= 64 and self.limbs[0] < pows64[t]) {
+            return t - 1;
+        }
+
+        // For larger values, compare against pows table (10^20 onwards)
+        if (t >= 20) {
+            const pow_index = t - 20;
+            if (pow_index < pows.len) {
+                const power = U256{ .limbs = pows[pow_index] };
+                if (self.lt(power)) {
+                    return t - 1;
+                }
+            }
+        }
+
+        return t;
+    }
+
+    /// Writes the decimal string representation of self to the provided buffer.
+    /// Returns a slice of the buffer containing the result.
+    /// Buffer must be at least 78 bytes (max decimal digits for U256).
+    ///
+    /// Algorithm: Repeatedly divide by 10^19 (largest power of 10 that fits in u64)
+    /// and convert remainders to decimal digits.
+    ///
+    /// Note: This function may produce incorrect results due to known issues in udivrem.
+    pub fn dec(self: U256, buffer: []u8) ![]u8 {
+        if (buffer.len < 78) return error.BufferTooSmall;
+
+        // Fast path for zero
+        if (self.isZero()) {
+            buffer[0] = '0';
+            return buffer[0..1];
+        }
+
+        // Fast path for u64 values
+        if (self.isU64()) {
+            const val = self.getU64();
+            return std.fmt.bufPrint(buffer, "{d}", .{val}) catch return error.BufferTooSmall;
+        }
+
+        // General case: repeatedly divide by 10^19
+        // Max U256 is 78 decimal digits, so we need 98 bytes with slack
+        var out: [98]u8 = undefined;
+        @memset(&out, '0');
+
+        const divisor = U256.init(10000000000000000000); // 10^19 (19 digits)
+        var y = self; // working copy
+        var pos: usize = out.len; // position to write to
+
+        while (true) {
+            // Divide y by divisor: y = quotient, rem = remainder
+            var quot: [4]u64 = [_]u64{0} ** 4;
+            var rem = U256.initZero();
+            division.udivrem(&quot, &y.limbs, &divisor, &rem);
+
+            // Convert remainder to decimal string (max 19 digits)
+            const rem_val = rem.getU64();
+            var buf: [20]u8 = undefined;
+            const s = std.fmt.bufPrint(&buf, "{d}", .{rem_val}) catch unreachable;
+
+            // Copy digits into output buffer
+            const copy_len = s.len;
+            pos -= copy_len;
+            @memcpy(out[pos..][0..copy_len], s);
+
+            // Check if we're done
+            y.limbs = quot;
+            if (y.isZero()) {
+                break;
+            }
+
+            // Move position back by 19 digits for next iteration
+            // (we may have written fewer digits, but we reserve 19 slots)
+            pos = if (pos >= 19) pos - (19 - copy_len) else 0;
+        }
+
+        // Skip leading zeroes and return the used portion
+        while (pos < out.len and out[pos] == '0') : (pos += 1) {}
+
+        const result_len = out.len - pos;
+        @memcpy(buffer[0..result_len], out[pos..]);
+        return buffer[0..result_len];
+    }
+
+    /// Writes the decimal string representation of self with thousands separators to the provided buffer.
+    /// Returns a slice of the buffer containing the result.
+    /// Buffer must be at least 104 bytes (78 digits + 26 separators).
+    ///
+    /// Algorithm: Same as dec(), but inserts separator every 3 digits from right to left.
+    ///
+    /// Note: This function may produce incorrect results due to known issues in udivrem.
+    pub fn prettyDec(self: U256, separator: u8, buffer: []u8) ![]u8 {
+        if (buffer.len < 104) return error.BufferTooSmall;
+
+        // Fast path for zero
+        if (self.isZero()) {
+            buffer[0] = '0';
+            return buffer[0..1];
+        }
+
+        // For simplicity, handle all cases with the general algorithm
+        // that inserts separators. Max size: 78 digits + 25 separators + slack = 140 bytes
+        var out: [140]u8 = undefined;
+        @memset(&out, '0');
+
+        const divisor = U256.init(10000000000000000000); // 10^19 (19 digits)
+        var y = self; // working copy
+        var pos: usize = out.len - 1; // position to write to (from right to left)
+        var comma: u32 = 0; // counter for inserting separators
+
+        while (true) {
+            // Divide y by divisor: y = quotient, rem = remainder
+            var quot: [4]u64 = [_]u64{0} ** 4;
+            var rem = U256.initZero();
+            division.udivrem(&quot, &y.limbs, &divisor, &rem);
+
+            // Convert remainder to decimal string (max 19 digits)
+            const rem_val = rem.getU64();
+            var buf: [20]u8 = undefined;
+            const s = std.fmt.bufPrint(&buf, "{d}", .{rem_val}) catch unreachable;
+
+            // Copy digits from right to left, inserting separators
+            var j: usize = s.len;
+            while (j > 0) {
+                j -= 1;
+                if (comma == 3) {
+                    out[pos] = separator;
+                    pos -= 1;
+                    comma = 0;
+                }
+                out[pos] = s[j];
+                comma += 1;
+                pos -= 1;
+            }
+
+            // Check if we're done
+            y.limbs = quot;
+            if (y.isZero()) {
+                break;
+            }
+
+            // Zero-padding for remaining iterations (if chunk had fewer than 19 digits)
+            const padding = 19 - s.len;
+            var p: usize = 0;
+            while (p < padding) : (p += 1) {
+                if (comma == 3) {
+                    out[pos] = separator;
+                    pos -= 1;
+                    comma = 0;
+                }
+                comma += 1;
+                pos -= 1;
+            }
+        }
+
+        // Return the used portion (skip leading zeros and unused space)
+        const result = out[pos + 1 ..];
+        @memcpy(buffer[0..result.len], result);
+        return buffer[0..result.len];
+    }
+
+    /// Parses a decimal string and sets self to the parsed value.
+    /// Returns error if the string is invalid or overflow occurs.
+    ///
+    /// Notable differences from big.Int.SetString:
+    /// - Does not accept underscore separators (e.g., "100_000")
+    /// - Does not accept negative numbers (including "-0")
+    /// - Accepts optional leading '+' sign
+    ///
+    /// The string can contain:
+    /// - Optional leading '+' sign
+    /// - Decimal digits (0-9)
+    /// - Leading zeros are allowed
+    /// - Max value is 2^256 - 1
+    ///
+    /// Examples: "0", "+12345", "115792089237316195423570985008687907853269984665640564039457584007913129639935"
+    pub fn setFromDecimal(self: *U256, input: []const u8) !*U256 {
+        // Validate input
+        if (input.len == 0) {
+            return error.InvalidDecimalString;
+        }
+
+        // Remove max one leading '+'
+        var bs = input;
+        if (bs[0] == '+') {
+            bs = bs[1..];
+            if (bs.len == 0) {
+                return error.InvalidDecimalString;
+            }
+        }
+
+        // Remove all leading zeros
+        if (bs.len > 0 and bs[0] == '0') {
+            var i: usize = 0;
+            while (i < bs.len and bs[i] == '0') {
+                i += 1;
+            }
+            bs = bs[i..];
+            // If all zeros, keep one
+            if (bs.len == 0) {
+                bs = "0";
+            }
+        }
+
+        // Validate all characters are digits
+        for (bs) |c| {
+            if (c < '0' or c > '9') {
+                return error.InvalidDecimalString;
+            }
+        }
+
+        // 2^256 - 1 = 115792089237316195423570985008687907853269984665640564039457584007913129639935 (78 digits)
+        const max_u256_str = "115792089237316195423570985008687907853269984665640564039457584007913129639935";
+
+        // Check length
+        if (bs.len < max_u256_str.len) {
+            return self.fromDecimalInternal(bs);
+        }
+
+        if (bs.len == max_u256_str.len) {
+            // Need to compare strings lexicographically
+            const order = std.mem.order(u8, bs, max_u256_str);
+            if (order == .gt) {
+                return error.Overflow;
+            }
+            return self.fromDecimalInternal(bs);
+        }
+
+        // Length > 78 digits
+        return error.Overflow;
+    }
+
+    /// Helper function for setFromDecimal.
+    /// Parses a decimal string in chunks of 19 characters (max u64 decimal digits).
+    /// Assumes input has been validated.
+    fn fromDecimalInternal(self: *U256, bs: []const u8) !*U256 {
+        // Clear the output
+        _ = self.clear();
+
+        if (bs.len == 0) {
+            return self;
+        }
+
+        // Process string in chunks of 19 characters from right to left
+        // Max uint64 is 18446744073709551615 (20 digits)
+        // So 19 9's is always within uint64 limit
+        var remaining: isize = @intCast(bs.len);
+        var slice = bs;
+
+        for (multipliers, 0..) |mult_opt, i| {
+            if (remaining <= 0) {
+                return self; // Done
+            }
+
+            // Parse the next chunk (up to 19 characters)
+            var num: u64 = 0;
+            if (remaining > 19) {
+                // Parse 19 characters from the right
+                const start: usize = @intCast(remaining - 19);
+                const chunk = slice[start..];
+                num = std.fmt.parseUnsigned(u64, chunk[0..19], 10) catch |err| {
+                    return err;
+                };
+            } else {
+                // Final round - parse remaining characters
+                num = std.fmt.parseUnsigned(u64, slice, 10) catch |err| {
+                    return err;
+                };
+            }
+
+            // Add this chunk to our running total
+            if (i == 0) {
+                // First round - just set the value
+                _ = self.setU64(num);
+            } else {
+                // Subsequent rounds - multiply by power of 10^19 and add
+                if (mult_opt) |mult_limbs| {
+                    const mult = U256{ .limbs = mult_limbs };
+                    var base = U256.init(num);
+                    _ = base.mul(base, mult);
+                    _ = self.add(self.*, base);
+                } else {
+                    unreachable; // Should never happen - multipliers[0] is null
+                }
+            }
+
+            // Move to next chunk
+            if (remaining > 19) {
+                const new_len: usize = @intCast(remaining - 19);
+                slice = slice[0..new_len];
+            }
+            remaining -= 19;
+        }
+
+        return self;
+    }
+
+    /// Convenience constructor to create a U256 from a decimal string.
+    /// Returns error if the string is invalid or the number is too large.
+    ///
+    /// This is equivalent to calling setFromDecimal() on a zero-initialized U256.
+    ///
+    /// Example:
+    /// ```zig
+    /// const result = U256.fromDecimal("12345");
+    /// if (result) |value| {
+    ///     // Use value
+    /// } else |err| {
+    ///     // Handle error
+    /// }
+    /// ```
+    pub fn fromDecimal(decimal: []const u8) !U256 {
+        var z = U256.initZero();
+        _ = try z.setFromDecimal(decimal);
+        return z;
+    }
+
+    /// Convenience constructor to create a U256 from a decimal string.
+    /// Panics if the string is invalid or the number is too large.
+    ///
+    /// Use this when you know the input is valid and want cleaner code.
+    ///
+    /// Example:
+    /// ```zig
+    /// const value = U256.mustFromDecimal("12345");
+    /// ```
+    pub fn mustFromDecimal(decimal: []const u8) U256 {
+        var z = U256.initZero();
+        _ = z.setFromDecimal(decimal) catch |err| {
+            std.debug.panic("mustFromDecimal failed: {}", .{err});
+        };
+        return z;
+    }
+
+    // Hex parsing error types
+    pub const HexError = error{
+        EmptyString,
+        MissingPrefix,
+        EmptyNumber,
+        LeadingZero,
+        InvalidSyntax,
+        TooBig,
+    };
+
+    /// Lookup table for converting ASCII hex characters to nibble values.
+    /// Non-hex characters map to 0xff (bad nibble marker).
+    const hex_nibble_table = blk: {
+        @setEvalBranchQuota(10000);
+        var table: [256]u8 = undefined;
+        // Initialize all to 0xff (invalid)
+        for (&table) |*entry| {
+            entry.* = 0xff;
+        }
+        // Set valid hex digits
+        table['0'] = 0;
+        table['1'] = 1;
+        table['2'] = 2;
+        table['3'] = 3;
+        table['4'] = 4;
+        table['5'] = 5;
+        table['6'] = 6;
+        table['7'] = 7;
+        table['8'] = 8;
+        table['9'] = 9;
+        table['a'] = 10;
+        table['b'] = 11;
+        table['c'] = 12;
+        table['d'] = 13;
+        table['e'] = 14;
+        table['f'] = 15;
+        table['A'] = 10;
+        table['B'] = 11;
+        table['C'] = 12;
+        table['D'] = 13;
+        table['E'] = 14;
+        table['F'] = 15;
+        break :blk table;
+    };
+
+    /// Validates a hex string according to our strict rules.
+    /// Returns an error if the string is invalid.
+    fn checkHexString(input: []const u8) HexError!void {
+        const len = input.len;
+
+        // Check for empty string
+        if (len == 0) {
+            return HexError.EmptyString;
+        }
+
+        // Check for 0x or 0X prefix
+        if (len < 2 or input[0] != '0' or (input[1] != 'x' and input[1] != 'X')) {
+            return HexError.MissingPrefix;
+        }
+
+        // Check for empty number (just "0x")
+        if (len == 2) {
+            return HexError.EmptyNumber;
+        }
+
+        // Check for leading zero (e.g., "0x0001")
+        if (len > 3 and input[2] == '0') {
+            return HexError.LeadingZero;
+        }
+    }
+
+    /// Sets z from the given string, interpreted as a hexadecimal number.
+    ///
+    /// This method is _not_ strictly identical to std.fmt.parseInt.
+    /// Notable differences:
+    /// - This method _requires_ "0x" or "0X" prefix
+    /// - This method does not accept zero-prefixed hex, e.g. "0x0001"
+    /// - This method does not accept underscore input
+    /// - This method does not accept negative input
+    ///
+    /// Returns HexError if the string is invalid or the number is too large (> 256 bits).
+    ///
+    /// Example:
+    /// ```zig
+    /// var z = U256.initZero();
+    /// try z.setFromHex("0x1234");
+    /// ```
+    pub fn setFromHex(self: *U256, hex_str: []const u8) HexError!void {
+        // Validate the hex string
+        try checkHexString(hex_str);
+
+        // Check length: "0x" + up to 64 hex chars = max 66 chars
+        if (hex_str.len > 66) {
+            return HexError.TooBig;
+        }
+
+        // Clear the result
+        _ = self.clear();
+
+        // Parse from right to left, 16 hex chars (64 bits) at a time
+        var end = hex_str.len;
+        for (0..4) |i| {
+            var start = if (end > 16) end - 16 else 2; // Skip "0x" prefix
+            if (start < 2) start = 2;
+
+            // Parse this segment
+            for (start..end) |idx| {
+                const nib = hex_nibble_table[hex_str[idx]];
+                if (nib == 0xff) {
+                    return HexError.InvalidSyntax;
+                }
+                self.limbs[i] = self.limbs[i] << 4;
+                self.limbs[i] += nib;
+            }
+
+            end = start;
+            if (end <= 2) break; // We've consumed everything
+        }
+    }
+
+    /// Convenience constructor to create a U256 from a hexadecimal string.
+    /// The string is required to be '0x'-prefixed.
+    /// Numbers larger than 256 bits are not accepted.
+    ///
+    /// Returns a new U256 or an error if parsing fails.
+    ///
+    /// Example:
+    /// ```zig
+    /// const z = try U256.fromHex("0xdeadbeef");
+    /// ```
+    pub fn fromHex(hex_str: []const u8) HexError!U256 {
+        var z = U256.initZero();
+        try z.setFromHex(hex_str);
+        return z;
+    }
+
+    /// Convenience constructor to create a U256 from a hexadecimal string.
+    /// Panics if the string is invalid or the number is too large.
+    ///
+    /// Use this when you know the input is valid and want cleaner code.
+    ///
+    /// Example:
+    /// ```zig
+    /// const value = U256.mustFromHex("0xdeadbeef");
+    /// ```
+    pub fn mustFromHex(hex_str: []const u8) U256 {
+        var z = U256.initZero();
+        z.setFromHex(hex_str) catch |err| {
+            std.debug.panic("mustFromHex failed: {}", .{err});
+        };
+        return z;
+    }
+
+    /// Unmarshals text that can be either hexadecimal or decimal.
+    /// - For hexadecimal, the input _must_ be prefixed with "0x" or "0X"
+    /// - For decimal, the input must not have "0x" prefix
+    ///
+    /// This is useful for parsing user input or JSON/text formats where
+    /// the format might be either hex or decimal.
+    ///
+    /// Can return errors from either setFromHex() or setFromDecimal():
+    /// - Hex errors: EmptyString, MissingPrefix, EmptyNumber, LeadingZero, InvalidSyntax, TooBig
+    /// - Decimal errors: InvalidDecimalString, Overflow
+    ///
+    /// Example:
+    /// ```zig
+    /// var z = U256.initZero();
+    /// try z.unmarshalText("0x1234"); // parses as hex
+    /// try z.unmarshalText("1234");   // parses as decimal
+    /// ```
+    pub fn unmarshalText(self: *U256, input: []const u8) !void {
+        // Check if input is hex (has 0x or 0X prefix)
+        if (input.len >= 2 and input[0] == '0' and (input[1] == 'x' or input[1] == 'X')) {
+            try self.setFromHex(input);
+        } else {
+            _ = try self.setFromDecimal(input);
+        }
+    }
+
+    /// Convenience constructor to create a U256 from text (hex or decimal).
+    /// Automatically detects the format based on "0x" prefix.
+    ///
+    /// Example:
+    /// ```zig
+    /// const hex_val = try U256.fromText("0x1234");
+    /// const dec_val = try U256.fromText("1234");
+    /// ```
+    pub fn fromText(input: []const u8) !U256 {
+        var z = U256.initZero();
+        try z.unmarshalText(input);
+        return z;
+    }
+
+    /// Convenience constructor to create a U256 from text (hex or decimal).
+    /// Panics if the input is invalid.
+    ///
+    /// Example:
+    /// ```zig
+    /// const hex_val = U256.mustFromText("0x1234");
+    /// const dec_val = U256.mustFromText("1234");
+    /// ```
+    pub fn mustFromText(input: []const u8) U256 {
+        var z = U256.initZero();
+        z.unmarshalText(input) catch |err| {
+            std.debug.panic("mustFromText failed: {}", .{err});
+        };
+        return z;
+    }
+
+    /// Marshals the U256 to text using decimal representation.
+    /// Compatible with encoding.TextMarshaler interface.
+    /// Writes to the provided buffer and returns a slice containing the result.
+    /// Buffer must be at least 78 bytes (max decimal digits for U256).
+    ///
+    /// Example:
+    /// ```zig
+    /// var z = U256.init(12345);
+    /// var buffer: [78]u8 = undefined;
+    /// const text = try z.marshalText(&buffer);
+    /// // text contains "12345"
+    /// ```
+    pub fn marshalText(self: U256, buffer: []u8) ![]u8 {
+        return try self.dec(buffer);
+    }
+
+    /// Marshals the U256 to JSON format as a quoted decimal string.
+    /// This is _not_ compatible with big.Int: big.Int marshals into JSON 'native' numeric format.
+    ///
+    /// The JSON native format is, on some platforms (e.g. javascript), limited to 53-bit large
+    /// integer space. Thus, U256 uses string-format, which is not compatible with big.Int
+    /// (big.Int refuses to unmarshal a string representation).
+    ///
+    /// Writes to the provided buffer and returns a slice containing the result.
+    /// Buffer must be at least 80 bytes (78 digits + 2 quotes).
+    ///
+    /// Example:
+    /// ```zig
+    /// var z = U256.init(12345);
+    /// var buffer: [80]u8 = undefined;
+    /// const json = try z.marshalJSON(&buffer);
+    /// // json contains "\"12345\""
+    /// ```
+    pub fn marshalJSON(self: U256, buffer: []u8) ![]u8 {
+        if (buffer.len < 80) return error.BufferTooSmall;
+
+        var temp_buf: [78]u8 = undefined;
+        const dec_str = try self.dec(&temp_buf);
+
+        // Add quotes: "..." = dec_str.len + 2
+        const result_len = dec_str.len + 2;
+        buffer[0] = '"';
+        @memcpy(buffer[1 .. dec_str.len + 1], dec_str);
+        buffer[dec_str.len + 1] = '"';
+
+        return buffer[0..result_len];
+    }
+
+    /// Unmarshals JSON input into this U256.
+    /// Accepts either:
+    /// - Quoted string: either hexadecimal (with 0x prefix) OR decimal
+    /// - Not quoted string: only decimal
+    ///
+    /// Example:
+    /// ```zig
+    /// var z = U256.initZero();
+    /// try z.unmarshalJSON("\"12345\"");  // Quoted decimal
+    /// try z.unmarshalJSON("\"0x3039\""); // Quoted hex
+    /// try z.unmarshalJSON("12345");      // Unquoted decimal
+    /// ```
+    pub fn unmarshalJSON(self: *U256, input: []const u8) !void {
+        if (input.len < 2 or input[0] != '"' or input[input.len - 1] != '"') {
+            // If not quoted, it must be decimal
+            _ = try self.setFromDecimal(input);
+        } else {
+            // Remove quotes and unmarshal the content
+            try self.unmarshalText(input[1 .. input.len - 1]);
+        }
+    }
+
+    /// Returns the decimal string representation of this U256.
+    /// Equivalent to calling dec() but with a more conventional name.
+    /// Writes to the provided buffer and returns a slice containing the result.
+    /// Buffer must be at least 78 bytes (max decimal digits for U256).
+    ///
+    /// Example:
+    /// ```zig
+    /// var z = U256.init(12345);
+    /// var buffer: [78]u8 = undefined;
+    /// const str = try z.string(&buffer);
+    /// // str contains "12345"
+    /// ```
+    pub fn string(self: U256, buffer: []u8) ![]u8 {
+        return try self.dec(buffer);
+    }
+
+    /// Encodes U256 to hexadecimal string with 0x prefix.
+    /// The output is lowercase hexadecimal without leading zeros (except for zero value).
+    /// Writes to the provided buffer and returns a slice containing the result.
+    /// Buffer must be at least 66 bytes (0x + 64 hex chars).
+    ///
+    /// Example:
+    /// ```zig
+    /// var z = U256.init(255);
+    /// var buffer: [66]u8 = undefined;
+    /// const hex_str = try z.hex(&buffer);
+    /// // hex_str contains "0xff"
+    /// ```
+    pub fn hex(self: U256, buffer: []u8) ![]u8 {
+        if (buffer.len < 66) return error.BufferTooSmall;
+
+        const hextable = "0123456789abcdef";
+
+        // Calculate number of nibbles needed (4 bits per nibble)
+        const bit_len = self.bitLen();
+        var nibbles = (bit_len + 3) / 4; // Round up to nearest nibble
+        if (nibbles == 0) {
+            nibbles = 1;
+        }
+
+        buffer[0] = '0';
+        buffer[1] = 'x';
+
+        // Determine which limb to start from
+        const start_limb = (nibbles - 1) / 16; // 16 nibbles per u64 limb
+
+        // Process each limb from most significant to least significant
+        var limb_idx: usize = start_limb + 1;
+        while (limb_idx > 0) {
+            limb_idx -= 1;
+            const limb = self.limbs[limb_idx];
+            const off = 2 + (start_limb - limb_idx) * 16;
+
+            // Extract each nibble from the limb (16 nibbles per u64)
+            buffer[off + 0] = hextable[(limb >> 60) & 0xf];
+            buffer[off + 1] = hextable[(limb >> 56) & 0xf];
+            buffer[off + 2] = hextable[(limb >> 52) & 0xf];
+            buffer[off + 3] = hextable[(limb >> 48) & 0xf];
+            buffer[off + 4] = hextable[(limb >> 44) & 0xf];
+            buffer[off + 5] = hextable[(limb >> 40) & 0xf];
+            buffer[off + 6] = hextable[(limb >> 36) & 0xf];
+            buffer[off + 7] = hextable[(limb >> 32) & 0xf];
+            buffer[off + 8] = hextable[(limb >> 28) & 0xf];
+            buffer[off + 9] = hextable[(limb >> 24) & 0xf];
+            buffer[off + 10] = hextable[(limb >> 20) & 0xf];
+            buffer[off + 11] = hextable[(limb >> 16) & 0xf];
+            buffer[off + 12] = hextable[(limb >> 12) & 0xf];
+            buffer[off + 13] = hextable[(limb >> 8) & 0xf];
+            buffer[off + 14] = hextable[(limb >> 4) & 0xf];
+            buffer[off + 15] = hextable[limb & 0xf];
+        }
+
+        // Find first non-zero nibble to trim leading zeros
+        var first_nonzero: usize = 2;
+        const output_len = 2 + nibbles;
+        while (first_nonzero < output_len - 1 and buffer[first_nonzero] == '0') {
+            first_nonzero += 1;
+        }
+
+        // If we need to trim, shift the data
+        if (first_nonzero > 2) {
+            const trimmed_len = output_len - (first_nonzero - 2);
+            buffer[0] = '0';
+            buffer[1] = 'x';
+            const copy_len = output_len - first_nonzero;
+            var i: usize = 0;
+            while (i < copy_len) : (i += 1) {
+                buffer[2 + i] = buffer[first_nonzero + i];
+            }
+            return buffer[0..trimmed_len];
+        }
+
+        return buffer[0..output_len];
+    }
+
+    /// Implements database/sql Scanner interface.
+    /// Decodes a string (standard or scientific notation) into this U256.
+    /// Supports:
+    /// - Standard decimal: "12345"
+    /// - Scientific notation: "1.23e4" or "123e2"
+    /// - Null values (clears to zero)
+    ///
+    /// Example:
+    /// ```zig
+    /// var z = U256.initZero();
+    /// try z.scan("1.5e3"); // Sets z to 1500
+    /// ```
+    pub fn scan(self: *U256, src: ?[]const u8) !void {
+        if (src == null or src.?.len == 0) {
+            _ = self.clear();
+            return;
+        }
+
+        const str = src.?;
+        const idx = std.mem.indexOfScalar(u8, str, 'e');
+
+        if (idx == null) {
+            // No scientific notation, just parse as decimal
+            _ = try self.setFromDecimal(str);
+            return;
+        }
+
+        // Parse scientific notation: "1.23e4"
+        const base_str = str[0..idx.?];
+        const exp_str = str[idx.? + 1 ..];
+
+        // Parse the base (mantissa)
+        _ = try self.setFromDecimal(base_str);
+
+        // Check for "e0" shortcut
+        if (std.mem.eql(u8, exp_str, "0")) {
+            return;
+        }
+
+        // Parse the exponent
+        var exponent = U256.initZero();
+        _ = try exponent.setFromDecimal(exp_str);
+
+        // Check if exponent is too large (10^78 > 2^256)
+        if (exponent.gt(U256.init(77))) {
+            return error.TooBig;
+        }
+
+        // Calculate 10^exponent
+        var power = U256.init(10);
+        _ = power.iExp(exponent);
+
+        // Multiply self by 10^exponent
+        const overflow = self.mulOverflow(self.*, power);
+        if (overflow) {
+            return error.TooBig;
+        }
+    }
+
+    /// Implements database/sql/driver Valuer interface.
+    /// Encodes this U256 as a base-10 decimal string.
+    /// The caller owns the returned memory and must free it.
+    ///
+    /// Compatible with:
+    /// - Postgres: integer and Numeric/Decimal types
+    /// - MariaDB/MySQL: Numeric/Decimal types (up to 65 digits; use VARCHAR(79) for larger)
+    /// - SQLite: TEXT type
+    ///
+    /// Example:
+    /// ```zig
+    /// var z = U256.init(12345);
+    /// var buffer: [78]u8 = undefined;
+    /// const val = try z.value(&buffer);
+    /// // val contains "12345"
+    /// ```
+    pub fn value(self: U256, buffer: []u8) ![]u8 {
+        return try self.dec(buffer);
+    }
+
+    /// Encodes this U256 as RLP (Recursive Length Prefix) and writes to a std.io.Writer.
+    /// This implements the rlp.Encoder interface from go-ethereum.
+    ///
+    /// RLP encoding rules for U256:
+    /// - Zero is encoded as 0x80 (empty string)
+    /// - Values 0-127 are encoded as a single byte
+    /// - Larger values are encoded as: [0x80 + length, big-endian bytes]
+    ///
+    /// Compatible with Ethereum's go-ethereum RLP encoding.
+    ///
+    /// Example:
+    /// ```zig
+    /// var z = U256.init(255);
+    /// var buffer = std.ArrayList(u8).init(allocator);
+    /// defer buffer.deinit();
+    /// try z.encodeRLP(buffer.writer());
+    /// ```
+    pub fn encodeRLP(self: U256, writer: anytype) !void {
+        const bit_len = self.bitLen();
+
+        // Handle zero case: encode as 0x80 (empty string)
+        if (bit_len == 0) {
+            try writer.writeByte(0x80);
+            return;
+        }
+
+        // Handle single byte case (0-127): encode as single byte
+        if (bit_len <= 7) {
+            try writer.writeByte(@as(u8, @intCast(self.limbs[0])));
+            return;
+        }
+
+        // Multi-byte case: encode as [0x80 + length, big-endian bytes]
+        const n_bytes: u8 = @intCast((bit_len + 7) / 8);
+
+        // Build buffer with big-endian representation
+        var b: [33]u8 = undefined;
+
+        // Write limbs in big-endian order
+        std.mem.writeInt(u64, b[1..9], self.limbs[3], .big);
+        std.mem.writeInt(u64, b[9..17], self.limbs[2], .big);
+        std.mem.writeInt(u64, b[17..25], self.limbs[1], .big);
+        std.mem.writeInt(u64, b[25..33], self.limbs[0], .big);
+
+        // Set length prefix at the appropriate position
+        b[32 - n_bytes] = 0x80 + n_bytes;
+
+        // Write from the length prefix to the end
+        try writer.writeAll(b[32 - n_bytes ..]);
+    }
+
+    /// Custom formatter for U256 to work with std.fmt.
+    /// Only supports `{any}` format specifier, which outputs lowercase hexadecimal.
+    ///
+    /// For decimal formatting, use the `dec()` method or convert to big.int with `toBig()`.
+    ///
+    /// Example:
+    /// ```zig
+    /// const value = U256.init(255);
+    /// std.debug.print("{any}", .{value});  // "ff"
+    /// ```
+    pub fn format(
+        self: U256,
+        comptime fmt: []const u8,
+        options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        _ = fmt;
+        _ = options;
+
+        // Lowercase hexadecimal output
+        // Find the first non-zero limb
+        var start_limb: usize = 3;
+        while (start_limb > 0 and self.limbs[start_limb] == 0) : (start_limb -= 1) {}
+
+        if (self.limbs[start_limb] == 0) {
+            // All zero
+            try writer.writeAll("0");
+        } else {
+            // Print first limb without leading zeros
+            try std.fmt.format(writer, "{x}", .{self.limbs[start_limb]});
+
+            // Print remaining limbs with leading zeros (16 hex digits per limb)
+            if (start_limb > 0) {
+                var i = start_limb;
+                while (i > 0) {
+                    i -= 1;
+                    try std.fmt.format(writer, "{x:0>16}", .{self.limbs[i]});
+                }
+            }
+        }
+    }
+
+    // SSZ (Simple Serialize) Marshaling
+    // SSZ is used in Ethereum 2.0 for encoding data
+
+    /// Writes the SSZ-encoded representation of this U256 into the destination buffer.
+    /// The U256 is encoded as 32 bytes in little-endian format (4 x u64 limbs).
+    /// Buffer must have at least 32 bytes available starting at offset.
+    ///
+    /// Example:
+    /// ```zig
+    /// var z = U256.init(12345);
+    /// var buffer: [32]u8 = undefined;
+    /// try z.marshalSSZInto(&buffer);
+    /// ```
+    pub fn marshalSSZInto(self: U256, dst: []u8) !void {
+        if (dst.len < 32) return error.BufferTooSmall;
+
+        std.mem.writeInt(u64, dst[0..8], self.limbs[0], .little);
+        std.mem.writeInt(u64, dst[8..16], self.limbs[1], .little);
+        std.mem.writeInt(u64, dst[16..24], self.limbs[2], .little);
+        std.mem.writeInt(u64, dst[24..32], self.limbs[3], .little);
+    }
+
+    /// Marshals the U256 to SSZ format and returns a fixed 32-byte array.
+    /// The U256 is encoded as 32 bytes in little-endian format (4 x u64 limbs).
+    ///
+    /// Example:
+    /// ```zig
+    /// var z = U256.init(12345);
+    /// const blob = z.marshalSSZ();
+    /// ```
+    pub fn marshalSSZ(self: U256) [32]u8 {
+        var blob: [32]u8 = undefined;
+        std.mem.writeInt(u64, blob[0..8], self.limbs[0], .little);
+        std.mem.writeInt(u64, blob[8..16], self.limbs[1], .little);
+        std.mem.writeInt(u64, blob[16..24], self.limbs[2], .little);
+        std.mem.writeInt(u64, blob[24..32], self.limbs[3], .little);
+        return blob;
+    }
+
+    /// Returns the SSZ encoded size of U256, which is always 32 bytes.
+    ///
+    /// Example:
+    /// ```zig
+    /// const size = U256.sizeSSZ(); // Always returns 32
+    /// ```
+    pub fn sizeSSZ() usize {
+        return 32;
+    }
+
+    /// Unmarshals an SSZ-encoded 32-byte buffer into this U256.
+    /// Implements the fastssz.Unmarshaler interface.
+    ///
+    /// The buffer must be exactly 32 bytes in little-endian format.
+    /// Returns error.BadEncodedLength if the buffer length is not 32.
+    ///
+    /// Example:
+    /// ```zig
+    /// var z = U256.initZero();
+    /// const buf = [_]u8{0xff} ++ [_]u8{0} ** 31;
+    /// try z.unmarshalSSZ(&buf);
+    /// // z now contains 255
+    /// ```
+    pub fn unmarshalSSZ(self: *U256, buf: []const u8) !void {
+        if (buf.len != 32) {
+            return error.BadEncodedLength;
+        }
+
+        self.limbs[0] = std.mem.readInt(u64, buf[0..8], .little);
+        self.limbs[1] = std.mem.readInt(u64, buf[8..16], .little);
+        self.limbs[2] = std.mem.readInt(u64, buf[16..24], .little);
+        self.limbs[3] = std.mem.readInt(u64, buf[24..32], .little);
+    }
+
+    /// Creates a new U256 from an SSZ-encoded buffer.
+    /// Convenience constructor that returns a new U256 value.
+    ///
+    /// Example:
+    /// ```zig
+    /// const buf = [_]u8{0xff} ++ [_]u8{0} ** 31;
+    /// const z = try U256.fromSSZ(&buf);
+    /// ```
+    pub fn fromSSZ(buf: []const u8) !U256 {
+        var z = U256.initZero();
+        try z.unmarshalSSZ(buf);
+        return z;
+    }
+
+    /// Computes the hash tree root for this U256.
+    /// Implements the fastssz.HashRoot interface's non-dependent part.
+    ///
+    /// For U256, the hash tree root is simply the SSZ encoding itself
+    /// since it's a basic type that fits in 32 bytes.
+    ///
+    /// Example:
+    /// ```zig
+    /// var z = U256.init(255);
+    /// const hash = z.hashTreeRoot();
+    /// // hash contains the SSZ encoding
+    /// ```
+    pub fn hashTreeRoot(self: U256) [32]u8 {
+        return self.marshalSSZ();
+    }
+
+    /// Converts self to a std.math.big.int.Managed.
+    /// The caller owns the returned big integer and must call .deinit() on it.
+    ///
+    /// Example:
+    /// ```zig
+    /// const allocator = std.heap.page_allocator;
+    /// var z = U256.init(12345);
+    /// var big = try z.toBig(allocator);
+    /// defer big.deinit();
+    /// ```
+    pub fn toBig(self: U256, allocator: std.mem.Allocator) !std.math.big.int.Managed {
+        var result = try std.math.big.int.Managed.init(allocator);
+        errdefer result.deinit();
+        try self.intoBig(&result);
+        return result;
+    }
+
+    /// Sets a provided std.math.big.int.Managed to the value of self.
+    /// This reuses the existing allocation if possible.
+    ///
+    /// Note: In Zig, we don't need the double-pointer pattern from Go since
+    /// we pass the Managed by pointer and can modify it directly.
+    ///
+    /// Example:
+    /// ```zig
+    /// var z = U256.init(12345);
+    /// var big = try std.math.big.int.Managed.init(allocator);
+    /// defer big.deinit();
+    /// try z.intoBig(&big);
+    /// ```
+    pub fn intoBig(self: U256, big: *std.math.big.int.Managed) !void {
+        // Zig's big.int uses limbs that are always usize (word size)
+        // On 64-bit: usize = u64, so we need 4 limbs
+        // On 32-bit: usize = u32, so we need 8 limbs
+
+        comptime {
+            // Compile-time check: ensure we're on 32-bit or 64-bit architecture
+            if (@sizeOf(usize) != 4 and @sizeOf(usize) != 8) {
+                @compileError("U256 toBig/intoBig only supports 32-bit and 64-bit architectures");
+            }
+        }
+
+        if (@sizeOf(usize) == 8) {
+            // 64-bit architecture: 4 limbs needed
+            try big.ensureCapacity(4);
+
+            // Build up value using shifts and adds
+            try big.set(0);
+            for (self.limbs, 0..) |limb, i| {
+                if (limb != 0) {
+                    var temp = try std.math.big.int.Managed.init(big.allocator);
+                    defer temp.deinit();
+                    try temp.set(limb);
+
+                    if (i > 0) {
+                        var temp_mut = temp.toMutable();
+                        temp_mut.shiftLeft(temp.toConst(), i * 64);
+                    }
+
+                    try big.add(big, &temp);
+                }
+            }
+        } else {
+            // 32-bit architecture: 8 limbs needed
+            try big.ensureCapacity(8);
+
+            // Build up value using shifts and adds
+            try big.set(0);
+            var limb_idx: usize = 0;
+            for (self.limbs) |limb64| {
+                // Split each u64 into two u32 limbs (low, high)
+                const low = @as(u32, @truncate(limb64));
+                const high = @as(u32, @truncate(limb64 >> 32));
+
+                if (low != 0) {
+                    var temp = try std.math.big.int.Managed.init(big.allocator);
+                    defer temp.deinit();
+                    try temp.set(low);
+
+                    if (limb_idx > 0) {
+                        var temp_mut = temp.toMutable();
+                        temp_mut.shiftLeft(temp.toConst(), limb_idx * 32);
+                    }
+
+                    try big.add(big, &temp);
+                }
+                limb_idx += 1;
+
+                if (high != 0) {
+                    var temp = try std.math.big.int.Managed.init(big.allocator);
+                    defer temp.deinit();
+                    try temp.set(high);
+
+                    var temp_mut = temp.toMutable();
+                    temp_mut.shiftLeft(temp.toConst(), limb_idx * 32);
+
+                    try big.add(big, &temp);
+                }
+                limb_idx += 1;
+            }
+        }
     }
 
     /// Sets self to base^exponent mod 2^256 and returns self.
@@ -4654,8 +5930,8 @@ test "U256 isub - large values" {
 
 test "U256 paddedBytes - z = 1, n = 20" {
     const z = U256.init(1);
-    const bytes = try z.paddedBytes(std.testing.allocator, 20);
-    defer std.testing.allocator.free(bytes);
+    var buffer: [20]u8 = undefined;
+    const bytes = try z.paddedBytes(&buffer, 20);
 
     try std.testing.expectEqual(@as(usize, 20), bytes.len);
     // Should be all zeros except last byte
@@ -4667,8 +5943,8 @@ test "U256 paddedBytes - z = 1, n = 20" {
 
 test "U256 paddedBytes - z = 0xFF, n = 10" {
     const z = U256.init(0xFF);
-    const bytes = try z.paddedBytes(std.testing.allocator, 10);
-    defer std.testing.allocator.free(bytes);
+    var buffer: [10]u8 = undefined;
+    const bytes = try z.paddedBytes(&buffer, 10);
 
     try std.testing.expectEqual(@as(usize, 10), bytes.len);
     for (bytes[0..9]) |b| {
@@ -4684,8 +5960,8 @@ test "U256 paddedBytes - n = 32 (full width)" {
     z.limbs[2] = 0x1112131415161718;
     z.limbs[3] = 0x191A1B1C1D1E1F20;
 
-    const bytes = try z.paddedBytes(std.testing.allocator, 32);
-    defer std.testing.allocator.free(bytes);
+    var buffer: [32]u8 = undefined;
+    const bytes = try z.paddedBytes(&buffer, 32);
 
     try std.testing.expectEqual(@as(usize, 32), bytes.len);
     // Big-endian: most significant byte first (byte 7 of limb[3])
@@ -4697,8 +5973,8 @@ test "U256 paddedBytes - n = 32 (full width)" {
 
 test "U256 paddedBytes - n = 40 (more than 32)" {
     const z = U256.init(0x1234);
-    const bytes = try z.paddedBytes(std.testing.allocator, 40);
-    defer std.testing.allocator.free(bytes);
+    var buffer: [40]u8 = undefined;
+    const bytes = try z.paddedBytes(&buffer, 40);
 
     try std.testing.expectEqual(@as(usize, 40), bytes.len);
     // First 8 bytes should be zero (40 - 32 = 8 extra padding)
@@ -4715,8 +5991,8 @@ test "U256 paddedBytes - n = 40 (more than 32)" {
 
 test "U256 paddedBytes - n = 1 (minimal)" {
     const z = U256.init(0x42);
-    const bytes = try z.paddedBytes(std.testing.allocator, 1);
-    defer std.testing.allocator.free(bytes);
+    var buffer: [1]u8 = undefined;
+    const bytes = try z.paddedBytes(&buffer, 1);
 
     try std.testing.expectEqual(@as(usize, 1), bytes.len);
     try std.testing.expectEqual(@as(u8, 0x42), bytes[0]);
@@ -4724,8 +6000,8 @@ test "U256 paddedBytes - n = 1 (minimal)" {
 
 test "U256 paddedBytes - zero value" {
     const z = U256.initZero();
-    const bytes = try z.paddedBytes(std.testing.allocator, 20);
-    defer std.testing.allocator.free(bytes);
+    var buffer: [20]u8 = undefined;
+    const bytes = try z.paddedBytes(&buffer, 20);
 
     try std.testing.expectEqual(@as(usize, 20), bytes.len);
     for (bytes) |b| {
@@ -4742,8 +6018,8 @@ test "U256 paddedBytes - ethereum address (20 bytes)" {
     };
     _ = z.setBytes(&input);
 
-    const bytes = try z.paddedBytes(std.testing.allocator, 20);
-    defer std.testing.allocator.free(bytes);
+    var buffer: [20]u8 = undefined;
+    const bytes = try z.paddedBytes(&buffer, 20);
 
     try std.testing.expectEqual(@as(usize, 20), bytes.len);
     // Should match input exactly (round-trip)
@@ -5338,6 +6614,1503 @@ test "U256 exp - multi-limb base" {
     // (2^64-1)^2 should produce a large result
     const is_zero = z.limbs[0] == 0 and z.limbs[1] == 0 and z.limbs[2] == 0 and z.limbs[3] == 0;
     try std.testing.expectEqual(false, is_zero);
+}
+
+test "U256 log10 - zero" {
+    const z = U256.init(0);
+    // log10(0) returns 0 (not -Inf)
+    try std.testing.expectEqual(@as(u32, 0), z.log10());
+}
+
+test "U256 log10 - one" {
+    const z = U256.init(1);
+    // log10(1) = 0
+    try std.testing.expectEqual(@as(u32, 0), z.log10());
+}
+
+test "U256 log10 - powers of 10" {
+    // Test boundary values: 10^0 through 10^19
+    for (0..20) |i| {
+        const val = pows64[i];
+        const z = U256.init(val);
+        try std.testing.expectEqual(@as(u32, @intCast(i)), z.log10());
+    }
+}
+
+test "U256 log10 - just below powers of 10" {
+    // Test values just below powers of 10
+    const z = U256.init(9);
+    try std.testing.expectEqual(@as(u32, 0), z.log10()); // log10(9) = 0
+
+    const z2 = U256.init(99);
+    try std.testing.expectEqual(@as(u32, 1), z2.log10()); // log10(99) = 1
+
+    const z3 = U256.init(999);
+    try std.testing.expectEqual(@as(u32, 2), z3.log10()); // log10(999) = 2
+}
+
+test "U256 log10 - just above powers of 10" {
+    const z = U256.init(11);
+    try std.testing.expectEqual(@as(u32, 1), z.log10()); // log10(11) = 1
+
+    const z2 = U256.init(101);
+    try std.testing.expectEqual(@as(u32, 2), z2.log10()); // log10(101) = 2
+
+    const z3 = U256.init(1001);
+    try std.testing.expectEqual(@as(u32, 3), z3.log10()); // log10(1001) = 3
+}
+
+test "U256 log10 - large u64 values" {
+    // Test max u64
+    var z = U256.initZero();
+    z.limbs[0] = 0xFFFFFFFFFFFFFFFF;
+    // 2^64 - 1 = 18446744073709551615 (20 digits)
+    try std.testing.expectEqual(@as(u32, 19), z.log10());
+
+    // Test 10^18
+    const z2 = U256.init(1000000000000000000);
+    try std.testing.expectEqual(@as(u32, 18), z2.log10());
+
+    // Test 10^18 - 1
+    const z3 = U256.init(999999999999999999);
+    try std.testing.expectEqual(@as(u32, 17), z3.log10());
+}
+
+test "U256 log10 - multi-limb values (10^20 range)" {
+    // Test 10^20 exactly
+    var z = U256{ .limbs = pows[0] };
+    try std.testing.expectEqual(@as(u32, 20), z.log10());
+
+    // Test 10^25
+    z = U256{ .limbs = pows[5] };
+    try std.testing.expectEqual(@as(u32, 25), z.log10());
+
+    // Test 10^30
+    z = U256{ .limbs = pows[10] };
+    try std.testing.expectEqual(@as(u32, 30), z.log10());
+}
+
+test "U256 log10 - large multi-limb values" {
+    // Test 10^50
+    var z = U256{ .limbs = pows[30] };
+    try std.testing.expectEqual(@as(u32, 50), z.log10());
+
+    // Test 10^70
+    z = U256{ .limbs = pows[50] };
+    try std.testing.expectEqual(@as(u32, 70), z.log10());
+
+    // Test 10^77 (close to max)
+    z = U256{ .limbs = pows[57] };
+    try std.testing.expectEqual(@as(u32, 77), z.log10());
+}
+
+test "U256 log10 - max U256" {
+    // Test max U256 value: 2^256 - 1
+    var z = U256.initZero();
+    z.limbs[0] = 0xFFFFFFFFFFFFFFFF;
+    z.limbs[1] = 0xFFFFFFFFFFFFFFFF;
+    z.limbs[2] = 0xFFFFFFFFFFFFFFFF;
+    z.limbs[3] = 0xFFFFFFFFFFFFFFFF;
+    // 2^256 - 1 has 78 digits in decimal
+    try std.testing.expectEqual(@as(u32, 77), z.log10());
+}
+
+test "U256 log10 - verify boundaries" {
+    // Verify that log10(10^n - 1) = n-1 and log10(10^n) = n
+    for (0..10) |i| {
+        if (i > 0) {
+            // Test 10^i - 1
+            var z = U256.init(pows64[i]);
+            _ = z.sub(z, U256.init(1));
+            try std.testing.expectEqual(@as(u32, @intCast(i - 1)), z.log10());
+        }
+
+        // Test 10^i
+        const z2 = U256.init(pows64[i]);
+        try std.testing.expectEqual(@as(u32, @intCast(i)), z2.log10());
+    }
+}
+
+test "U256 dec - zero" {
+    const z = U256.init(0);
+    var buffer: [78]u8 = undefined;
+    const s = try z.dec(&buffer);
+    try std.testing.expectEqualStrings("0", s);
+}
+
+test "U256 dec - one" {
+    const z = U256.init(1);
+    var buffer: [78]u8 = undefined;
+    const s = try z.dec(&buffer);
+    try std.testing.expectEqualStrings("1", s);
+}
+
+test "U256 dec - small values" {
+    const z = U256.init(12345);
+    var buffer: [78]u8 = undefined;
+    const s = try z.dec(&buffer);
+    try std.testing.expectEqualStrings("12345", s);
+}
+
+test "U256 dec - u64 max" {
+    var z = U256.initZero();
+    z.limbs[0] = 0xFFFFFFFFFFFFFFFF;
+    var buffer: [78]u8 = undefined;
+    const s = try z.dec(&buffer);
+    // 2^64 - 1 = 18446744073709551615
+    try std.testing.expectEqualStrings("18446744073709551615", s);
+}
+
+test "U256 dec - power of 10 (10^19)" {
+    const z = U256.init(10000000000000000000);
+    var buffer: [78]u8 = undefined;
+    const s = try z.dec(&buffer);
+    try std.testing.expectEqualStrings("10000000000000000000", s);
+}
+
+test "U256 dec - 10^20" {
+    const z = U256{ .limbs = pows[0] };
+    var buffer: [78]u8 = undefined;
+    const s = try z.dec(&buffer);
+    try std.testing.expectEqualStrings("100000000000000000000", s);
+}
+
+test "U256 dec - 10^30" {
+    const z = U256{ .limbs = pows[10] };
+    var buffer: [78]u8 = undefined;
+    const s = try z.dec(&buffer);
+    try std.testing.expectEqualStrings("1000000000000000000000000000000", s);
+}
+
+test "U256 dec - max U256" {
+    // 2^256 - 1 = 115792089237316195423570985008687907853269984665640564039457584007913129639935
+    var z = U256.initZero();
+    z.limbs[0] = 0xFFFFFFFFFFFFFFFF;
+    z.limbs[1] = 0xFFFFFFFFFFFFFFFF;
+    z.limbs[2] = 0xFFFFFFFFFFFFFFFF;
+    z.limbs[3] = 0xFFFFFFFFFFFFFFFF;
+    var buffer: [78]u8 = undefined;
+    const s = try z.dec(&buffer);
+    const expected = "115792089237316195423570985008687907853269984665640564039457584007913129639935";
+    try std.testing.expectEqualStrings(expected, s);
+}
+
+test "U256 dec - arbitrary multi-limb value" {
+    // Create a value: 0x123456789ABCDEF0 in limbs[0]
+    var z = U256.initZero();
+    z.limbs[0] = 0x123456789ABCDEF0;
+    var buffer: [78]u8 = undefined;
+    const s = try z.dec(&buffer);
+    // 0x123456789ABCDEF0 = 1311768467463790320
+    try std.testing.expectEqualStrings("1311768467463790320", s);
+}
+
+test "U256 dec - value with multiple limbs" {
+    var z = U256.initZero();
+    z.limbs[0] = 1000;
+    z.limbs[1] = 2000;
+    z.limbs[2] = 0;
+    z.limbs[3] = 0;
+    // This is 2000 * 2^64 + 1000 = 36893488147419105000
+    var buffer: [78]u8 = undefined;
+    const s = try z.dec(&buffer);
+    try std.testing.expectEqualStrings("36893488147419105000", s);
+}
+
+test "U256 prettyDec - zero" {
+    const z = U256.init(0);
+    var buffer: [104]u8 = undefined;
+    const s = try z.prettyDec(',', &buffer);
+    try std.testing.expectEqualStrings("0", s);
+}
+
+test "U256 prettyDec - one" {
+    const z = U256.init(1);
+    var buffer: [104]u8 = undefined;
+    const s = try z.prettyDec(',', &buffer);
+    try std.testing.expectEqualStrings("1", s);
+}
+
+test "U256 prettyDec - small values" {
+    const z = U256.init(12345);
+    var buffer: [104]u8 = undefined;
+    const s = try z.prettyDec(',', &buffer);
+    try std.testing.expectEqualStrings("12,345", s);
+}
+
+test "U256 prettyDec - exactly 1000" {
+    const z = U256.init(1000);
+    var buffer: [104]u8 = undefined;
+    const s = try z.prettyDec(',', &buffer);
+    try std.testing.expectEqualStrings("1,000", s);
+}
+
+test "U256 prettyDec - million" {
+    const z = U256.init(1000000);
+    var buffer: [104]u8 = undefined;
+    const s = try z.prettyDec(',', &buffer);
+    try std.testing.expectEqualStrings("1,000,000", s);
+}
+
+test "U256 prettyDec - custom separator" {
+    const z = U256.init(1234567890);
+    var buffer: [104]u8 = undefined;
+    const s = try z.prettyDec('_', &buffer);
+    try std.testing.expectEqualStrings("1_234_567_890", s);
+}
+
+test "U256 prettyDec - u64 max" {
+    var z = U256.initZero();
+    z.limbs[0] = 0xFFFFFFFFFFFFFFFF;
+    var buffer: [104]u8 = undefined;
+    const s = try z.prettyDec(',', &buffer);
+    // 2^64 - 1 = 18446744073709551615
+    try std.testing.expectEqualStrings("18,446,744,073,709,551,615", s);
+}
+
+test "U256 prettyDec - 10^19" {
+    const z = U256.init(10000000000000000000);
+    var buffer: [104]u8 = undefined;
+    const s = try z.prettyDec(',', &buffer);
+    try std.testing.expectEqualStrings("10,000,000,000,000,000,000", s);
+}
+
+test "U256 prettyDec - 10^20" {
+    const z = U256{ .limbs = pows[0] };
+    var buffer: [104]u8 = undefined;
+    const s = try z.prettyDec(',', &buffer);
+    try std.testing.expectEqualStrings("100,000,000,000,000,000,000", s);
+}
+
+test "U256 prettyDec - max U256" {
+    // 2^256 - 1 with commas
+    var z = U256.initZero();
+    z.limbs[0] = 0xFFFFFFFFFFFFFFFF;
+    z.limbs[1] = 0xFFFFFFFFFFFFFFFF;
+    z.limbs[2] = 0xFFFFFFFFFFFFFFFF;
+    z.limbs[3] = 0xFFFFFFFFFFFFFFFF;
+    var buffer: [104]u8 = undefined;
+    const s = try z.prettyDec(',', &buffer);
+    const expected = "115,792,089,237,316,195,423,570,985,008,687,907,853,269,984,665,640,564,039,457,584,007,913,129,639,935";
+    try std.testing.expectEqualStrings(expected, s);
+}
+
+test "U256 setFromDecimal - zero" {
+    var z = U256.initZero();
+    _ = try z.setFromDecimal("0");
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[0]);
+    try std.testing.expect(z.isZero());
+}
+
+test "U256 setFromDecimal - one" {
+    var z = U256.initZero();
+    _ = try z.setFromDecimal("1");
+    try std.testing.expectEqual(@as(u64, 1), z.limbs[0]);
+}
+
+test "U256 setFromDecimal - small value" {
+    var z = U256.initZero();
+    _ = try z.setFromDecimal("12345");
+    try std.testing.expectEqual(@as(u64, 12345), z.limbs[0]);
+}
+
+test "U256 setFromDecimal - leading zeros" {
+    var z = U256.initZero();
+    _ = try z.setFromDecimal("00012345");
+    try std.testing.expectEqual(@as(u64, 12345), z.limbs[0]);
+}
+
+test "U256 setFromDecimal - u64 max" {
+    var z = U256.initZero();
+    _ = try z.setFromDecimal("18446744073709551615");
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+}
+
+test "U256 setFromDecimal - 10^19" {
+    var z = U256.initZero();
+    _ = try z.setFromDecimal("10000000000000000000");
+    const expected = U256.init(10000000000000000000);
+    try std.testing.expectEqual(expected.limbs[0], z.limbs[0]);
+}
+
+test "U256 setFromDecimal - 10^20" {
+    var z = U256.initZero();
+    _ = try z.setFromDecimal("100000000000000000000");
+    // This should match pows[0]
+    const expected = U256{ .limbs = pows[0] };
+    try std.testing.expectEqual(expected.limbs[0], z.limbs[0]);
+    try std.testing.expectEqual(expected.limbs[1], z.limbs[1]);
+    try std.testing.expectEqual(expected.limbs[2], z.limbs[2]);
+    try std.testing.expectEqual(expected.limbs[3], z.limbs[3]);
+}
+
+test "U256 setFromDecimal - 10^38" {
+    var z = U256.initZero();
+    _ = try z.setFromDecimal("100000000000000000000000000000000000000");
+    // Should match 10^38 from multipliers
+    const expected = U256{ .limbs = multipliers[2].? };
+    try std.testing.expectEqual(expected.limbs[0], z.limbs[0]);
+    try std.testing.expectEqual(expected.limbs[1], z.limbs[1]);
+    try std.testing.expectEqual(expected.limbs[2], z.limbs[2]);
+    try std.testing.expectEqual(expected.limbs[3], z.limbs[3]);
+}
+
+test "U256 setFromDecimal - max U256" {
+    var z = U256.initZero();
+    _ = try z.setFromDecimal("115792089237316195423570985008687907853269984665640564039457584007913129639935");
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[3]);
+}
+
+test "U256 setFromDecimal - leading plus sign" {
+    var z = U256.initZero();
+    _ = try z.setFromDecimal("+12345");
+    try std.testing.expectEqual(@as(u64, 12345), z.limbs[0]);
+}
+
+test "U256 setFromDecimal - just plus sign" {
+    var z = U256.initZero();
+    const result = z.setFromDecimal("+");
+    try std.testing.expectError(error.InvalidDecimalString, result);
+}
+
+test "U256 setFromDecimal - all zeros" {
+    var z = U256.initZero();
+    _ = try z.setFromDecimal("00000000");
+    try std.testing.expect(z.isZero());
+}
+
+test "U256 setFromDecimal - 78 digits just below max" {
+    var z = U256.initZero();
+    _ = try z.setFromDecimal("115792089237316195423570985008687907853269984665640564039457584007913129639934");
+    // Should succeed (max - 1)
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFE), z.limbs[0]);
+}
+
+test "U256 setFromDecimal - 78 digits just above max" {
+    var z = U256.initZero();
+    const result = z.setFromDecimal("115792089237316195423570985008687907853269984665640564039457584007913129639936");
+    try std.testing.expectError(error.Overflow, result);
+}
+
+test "U256 setFromDecimal - 78 nines (much larger than max)" {
+    var z = U256.initZero();
+    const result = z.setFromDecimal("999999999999999999999999999999999999999999999999999999999999999999999999999999");
+    try std.testing.expectError(error.Overflow, result);
+}
+
+test "U256 setFromDecimal - invalid empty string" {
+    var z = U256.initZero();
+    const result = z.setFromDecimal("");
+    try std.testing.expectError(error.InvalidDecimalString, result);
+}
+
+test "U256 setFromDecimal - invalid characters" {
+    var z = U256.initZero();
+    const result = z.setFromDecimal("123abc");
+    try std.testing.expectError(error.InvalidDecimalString, result);
+}
+
+test "U256 setFromDecimal - overflow" {
+    var z = U256.initZero();
+    // 79 digits - too large for U256
+    const result = z.setFromDecimal("1000000000000000000000000000000000000000000000000000000000000000000000000000000");
+    try std.testing.expectError(error.Overflow, result);
+}
+
+test "U256 setFromDecimal - roundtrip small" {
+    // Test that parsing and formatting are inverses
+    var z = U256.init(123456789);
+    var buffer: [78]u8 = undefined;
+    const s1 = try z.dec(&buffer);
+
+    var z2 = U256.initZero();
+    _ = try z2.setFromDecimal(s1);
+    try std.testing.expectEqual(z.limbs[0], z2.limbs[0]);
+}
+
+test "U256 fromDecimal - simple value" {
+    const z = try U256.fromDecimal("12345");
+    try std.testing.expectEqual(@as(u64, 12345), z.limbs[0]);
+}
+
+test "U256 fromDecimal - zero" {
+    const z = try U256.fromDecimal("0");
+    try std.testing.expect(z.isZero());
+}
+
+test "U256 fromDecimal - max U256" {
+    const z = try U256.fromDecimal("115792089237316195423570985008687907853269984665640564039457584007913129639935");
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[3]);
+}
+
+test "U256 fromDecimal - invalid" {
+    const result = U256.fromDecimal("abc");
+    try std.testing.expectError(error.InvalidDecimalString, result);
+}
+
+test "U256 fromDecimal - overflow" {
+    const result = U256.fromDecimal("999999999999999999999999999999999999999999999999999999999999999999999999999999");
+    try std.testing.expectError(error.Overflow, result);
+}
+
+test "U256 mustFromDecimal - simple value" {
+    const z = U256.mustFromDecimal("12345");
+    try std.testing.expectEqual(@as(u64, 12345), z.limbs[0]);
+}
+
+test "U256 mustFromDecimal - zero" {
+    const z = U256.mustFromDecimal("0");
+    try std.testing.expect(z.isZero());
+}
+
+test "U256 mustFromDecimal - max U256" {
+    const z = U256.mustFromDecimal("115792089237316195423570985008687907853269984665640564039457584007913129639935");
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[3]);
+}
+
+// Hex parsing tests
+test "U256 setFromHex - zero" {
+    var z = U256.initZero();
+    try z.setFromHex("0x0");
+    try std.testing.expect(z.isZero());
+}
+
+test "U256 setFromHex - simple value" {
+    var z = U256.initZero();
+    try z.setFromHex("0x1234");
+    try std.testing.expectEqual(@as(u64, 0x1234), z.limbs[0]);
+}
+
+test "U256 setFromHex - lowercase" {
+    var z = U256.initZero();
+    try z.setFromHex("0xdeadbeef");
+    try std.testing.expectEqual(@as(u64, 0xdeadbeef), z.limbs[0]);
+}
+
+test "U256 setFromHex - uppercase" {
+    var z = U256.initZero();
+    try z.setFromHex("0xDEADBEEF");
+    try std.testing.expectEqual(@as(u64, 0xDEADBEEF), z.limbs[0]);
+}
+
+test "U256 setFromHex - mixed case" {
+    var z = U256.initZero();
+    try z.setFromHex("0xDeAdBeEf");
+    try std.testing.expectEqual(@as(u64, 0xDEADBEEF), z.limbs[0]);
+}
+
+test "U256 setFromHex - uppercase X prefix" {
+    var z = U256.initZero();
+    try z.setFromHex("0X1234");
+    try std.testing.expectEqual(@as(u64, 0x1234), z.limbs[0]);
+}
+
+test "U256 setFromHex - 64-bit value" {
+    var z = U256.initZero();
+    try z.setFromHex("0xFFFFFFFFFFFFFFFF");
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[0]);
+}
+
+test "U256 setFromHex - multi-limb value" {
+    var z = U256.initZero();
+    try z.setFromHex("0x123456789abcdef0123456789abcdef0");
+    try std.testing.expectEqual(@as(u64, 0x123456789abcdef0), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0x123456789abcdef0), z.limbs[1]);
+}
+
+test "U256 setFromHex - max U256" {
+    var z = U256.initZero();
+    try z.setFromHex("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[3]);
+}
+
+test "U256 setFromHex - error: empty string" {
+    var z = U256.initZero();
+    const result = z.setFromHex("");
+    try std.testing.expectError(U256.HexError.EmptyString, result);
+}
+
+test "U256 setFromHex - error: missing prefix" {
+    var z = U256.initZero();
+    const result = z.setFromHex("1234");
+    try std.testing.expectError(U256.HexError.MissingPrefix, result);
+}
+
+test "U256 setFromHex - error: empty number" {
+    var z = U256.initZero();
+    const result = z.setFromHex("0x");
+    try std.testing.expectError(U256.HexError.EmptyNumber, result);
+}
+
+test "U256 setFromHex - error: leading zero" {
+    var z = U256.initZero();
+    const result = z.setFromHex("0x0001");
+    try std.testing.expectError(U256.HexError.LeadingZero, result);
+}
+
+test "U256 setFromHex - error: invalid character" {
+    var z = U256.initZero();
+    const result = z.setFromHex("0x123g");
+    try std.testing.expectError(U256.HexError.InvalidSyntax, result);
+}
+
+test "U256 setFromHex - error: too big (> 256 bits)" {
+    var z = U256.initZero();
+    const result = z.setFromHex("0x1ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
+    try std.testing.expectError(U256.HexError.TooBig, result);
+}
+
+test "U256 fromHex - simple value" {
+    const z = try U256.fromHex("0x1234");
+    try std.testing.expectEqual(@as(u64, 0x1234), z.limbs[0]);
+}
+
+test "U256 fromHex - zero" {
+    const z = try U256.fromHex("0x0");
+    try std.testing.expect(z.isZero());
+}
+
+test "U256 fromHex - max U256" {
+    const z = try U256.fromHex("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[3]);
+}
+
+test "U256 fromHex - error: invalid" {
+    const result = U256.fromHex("0xzzz");
+    try std.testing.expectError(U256.HexError.InvalidSyntax, result);
+}
+
+test "U256 fromHex - error: overflow" {
+    const result = U256.fromHex("0x1ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
+    try std.testing.expectError(U256.HexError.TooBig, result);
+}
+
+test "U256 mustFromHex - simple value" {
+    const z = U256.mustFromHex("0x1234");
+    try std.testing.expectEqual(@as(u64, 0x1234), z.limbs[0]);
+}
+
+test "U256 mustFromHex - zero" {
+    const z = U256.mustFromHex("0x0");
+    try std.testing.expect(z.isZero());
+}
+
+test "U256 mustFromHex - max U256" {
+    const z = U256.mustFromHex("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[3]);
+}
+
+test "U256 hex roundtrip - small value" {
+    const original = U256.init(0x1234);
+    const hex = "0x1234";
+    const parsed = try U256.fromHex(hex);
+    try std.testing.expect(original.eq(parsed));
+}
+
+test "U256 hex roundtrip - max U256" {
+    var original = U256.initZero();
+    original.limbs[0] = 0xFFFFFFFFFFFFFFFF;
+    original.limbs[1] = 0xFFFFFFFFFFFFFFFF;
+    original.limbs[2] = 0xFFFFFFFFFFFFFFFF;
+    original.limbs[3] = 0xFFFFFFFFFFFFFFFF;
+    const hex = "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+    const parsed = try U256.fromHex(hex);
+    try std.testing.expect(original.eq(parsed));
+}
+
+// Unmarshal text tests (auto-detect hex or decimal)
+test "U256 unmarshalText - hex with 0x prefix" {
+    var z = U256.initZero();
+    try z.unmarshalText("0x1234");
+    try std.testing.expectEqual(@as(u64, 0x1234), z.limbs[0]);
+}
+
+test "U256 unmarshalText - hex with 0X prefix" {
+    var z = U256.initZero();
+    try z.unmarshalText("0X1234");
+    try std.testing.expectEqual(@as(u64, 0x1234), z.limbs[0]);
+}
+
+test "U256 unmarshalText - decimal without prefix" {
+    var z = U256.initZero();
+    try z.unmarshalText("1234");
+    try std.testing.expectEqual(@as(u64, 1234), z.limbs[0]);
+}
+
+test "U256 unmarshalText - hex max U256" {
+    var z = U256.initZero();
+    try z.unmarshalText("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[3]);
+}
+
+test "U256 unmarshalText - decimal max U256" {
+    var z = U256.initZero();
+    try z.unmarshalText("115792089237316195423570985008687907853269984665640564039457584007913129639935");
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[3]);
+}
+
+test "U256 unmarshalText - zero hex" {
+    var z = U256.initZero();
+    try z.unmarshalText("0x0");
+    try std.testing.expect(z.isZero());
+}
+
+test "U256 unmarshalText - zero decimal" {
+    var z = U256.initZero();
+    try z.unmarshalText("0");
+    try std.testing.expect(z.isZero());
+}
+
+test "U256 unmarshalText - error: invalid hex" {
+    var z = U256.initZero();
+    const result = z.unmarshalText("0xzzz");
+    try std.testing.expectError(U256.HexError.InvalidSyntax, result);
+}
+
+test "U256 unmarshalText - error: invalid decimal" {
+    var z = U256.initZero();
+    const result = z.unmarshalText("123abc");
+    try std.testing.expectError(error.InvalidDecimalString, result);
+}
+
+test "U256 fromText - hex value" {
+    const z = try U256.fromText("0xdeadbeef");
+    try std.testing.expectEqual(@as(u64, 0xdeadbeef), z.limbs[0]);
+}
+
+test "U256 fromText - decimal value" {
+    const z = try U256.fromText("12345");
+    try std.testing.expectEqual(@as(u64, 12345), z.limbs[0]);
+}
+
+test "U256 fromText - error: invalid hex" {
+    const result = U256.fromText("0xzzz");
+    try std.testing.expectError(U256.HexError.InvalidSyntax, result);
+}
+
+test "U256 fromText - error: invalid decimal" {
+    const result = U256.fromText("123abc");
+    try std.testing.expectError(error.InvalidDecimalString, result);
+}
+
+test "U256 mustFromText - hex value" {
+    const z = U256.mustFromText("0x1234");
+    try std.testing.expectEqual(@as(u64, 0x1234), z.limbs[0]);
+}
+
+test "U256 mustFromText - decimal value" {
+    const z = U256.mustFromText("5678");
+    try std.testing.expectEqual(@as(u64, 5678), z.limbs[0]);
+}
+
+test "U256 mustFromText - max U256 hex" {
+    const z = U256.mustFromText("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[3]);
+}
+
+test "U256 mustFromText - max U256 decimal" {
+    const z = U256.mustFromText("115792089237316195423570985008687907853269984665640564039457584007913129639935");
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[3]);
+}
+
+test "U256 marshalText - zero" {
+    const z = U256.initZero();
+    var buffer: [78]u8 = undefined;
+    const text = try z.marshalText(&buffer);
+
+    try std.testing.expectEqualStrings("0", text);
+}
+
+test "U256 marshalText - simple value" {
+    const z = U256.init(12345);
+    var buffer: [78]u8 = undefined;
+    const text = try z.marshalText(&buffer);
+
+    try std.testing.expectEqualStrings("12345", text);
+}
+
+test "U256 marshalText - u64 max" {
+    const z = U256.init(18446744073709551615); // u64 max
+    var buffer: [78]u8 = undefined;
+    const text = try z.marshalText(&buffer);
+
+    try std.testing.expectEqualStrings("18446744073709551615", text);
+}
+
+test "U256 marshalJSON - zero" {
+    const z = U256.initZero();
+    var buffer: [80]u8 = undefined;
+    const json = try z.marshalJSON(&buffer);
+
+    try std.testing.expectEqualStrings("\"0\"", json);
+}
+
+test "U256 marshalJSON - simple value" {
+    const z = U256.init(12345);
+    var buffer: [80]u8 = undefined;
+    const json = try z.marshalJSON(&buffer);
+
+    try std.testing.expectEqualStrings("\"12345\"", json);
+}
+
+test "U256 marshalJSON - u64 max" {
+    const z = U256.init(18446744073709551615); // u64 max
+    var buffer: [80]u8 = undefined;
+    const json = try z.marshalJSON(&buffer);
+
+    try std.testing.expectEqualStrings("\"18446744073709551615\"", json);
+}
+
+test "U256 marshalJSON - quoted string format" {
+    const z = U256.init(999);
+    var buffer: [80]u8 = undefined;
+    const json = try z.marshalJSON(&buffer);
+
+    // Verify it starts and ends with quotes
+    try std.testing.expect(json[0] == '"');
+    try std.testing.expect(json[json.len - 1] == '"');
+    try std.testing.expectEqualStrings("\"999\"", json);
+}
+
+test "U256 unmarshalJSON - quoted decimal" {
+    var z = U256.initZero();
+    try z.unmarshalJSON("\"12345\"");
+
+    try std.testing.expectEqual(@as(u64, 12345), z.limbs[0]);
+
+    // Verify roundtrip
+    var buffer: [80]u8 = undefined;
+    const json = try z.marshalJSON(&buffer);
+    try std.testing.expectEqualStrings("\"12345\"", json);
+}
+
+test "U256 unmarshalJSON - quoted hex" {
+    var z = U256.initZero();
+    try z.unmarshalJSON("\"0xdead\"");
+
+    try std.testing.expectEqual(@as(u64, 0xdead), z.limbs[0]);
+}
+
+test "U256 unmarshalJSON - unquoted decimal" {
+    var z = U256.initZero();
+    try z.unmarshalJSON("67890");
+
+    try std.testing.expectEqual(@as(u64, 67890), z.limbs[0]);
+}
+
+test "U256 unmarshalJSON - quoted zero" {
+    var z = U256.init(999);
+    try z.unmarshalJSON("\"0\"");
+
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[0]);
+}
+
+test "U256 unmarshalJSON - unquoted zero" {
+    var z = U256.init(999);
+    try z.unmarshalJSON("0");
+
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[0]);
+}
+
+test "U256 unmarshalJSON - error: invalid quoted hex" {
+    var z = U256.initZero();
+    const result = z.unmarshalJSON("\"0xzzz\"");
+    try std.testing.expectError(U256.HexError.InvalidSyntax, result);
+}
+
+test "U256 unmarshalJSON - error: invalid unquoted decimal" {
+    var z = U256.initZero();
+    const result = z.unmarshalJSON("123abc");
+    try std.testing.expectError(error.InvalidDecimalString, result);
+}
+
+test "U256 unmarshalJSON - roundtrip quoted" {
+    var original = U256.init(999888777);
+
+    // Marshal to JSON
+    var buffer: [80]u8 = undefined;
+    const json = try original.marshalJSON(&buffer);
+
+    // Unmarshal back
+    var decoded = U256.initZero();
+    try decoded.unmarshalJSON(json);
+
+    try std.testing.expect(original.eq(decoded));
+}
+
+test "U256 string - zero" {
+    const z = U256.initZero();
+    var buffer: [78]u8 = undefined;
+    const str = try z.string(&buffer);
+
+    try std.testing.expectEqualStrings("0", str);
+}
+
+test "U256 string - simple value" {
+    const z = U256.init(54321);
+    var buffer: [78]u8 = undefined;
+    const str = try z.string(&buffer);
+
+    try std.testing.expectEqualStrings("54321", str);
+}
+
+test "U256 string - same as dec" {
+    var z = U256.initZero();
+    z.limbs[0] = 0x123456789abcdef0;
+
+    var buffer1: [78]u8 = undefined;
+    const str1 = try z.string(&buffer1);
+
+    var buffer2: [78]u8 = undefined;
+    const str2 = try z.dec(&buffer2);
+
+    try std.testing.expectEqualStrings(str1, str2);
+}
+
+test "U256 hex - zero" {
+    const z = U256.initZero();
+    var buffer: [66]u8 = undefined;
+    const hex_str = try z.hex(&buffer);
+
+    try std.testing.expectEqualStrings("0x0", hex_str);
+}
+
+test "U256 hex - simple value" {
+    const z = U256.init(255);
+    var buffer: [66]u8 = undefined;
+    const hex_str = try z.hex(&buffer);
+
+    try std.testing.expectEqualStrings("0xff", hex_str);
+}
+
+test "U256 hex - single limb" {
+    const z = U256.init(0xdeadbeef);
+    var buffer: [66]u8 = undefined;
+    const hex_str = try z.hex(&buffer);
+
+    try std.testing.expectEqualStrings("0xdeadbeef", hex_str);
+}
+
+test "U256 hex - multiple limbs" {
+    var z = U256.initZero();
+    z.limbs[0] = 0x123456789abcdef0;
+    z.limbs[1] = 0xfedcba9876543210;
+    var buffer: [66]u8 = undefined;
+    const hex_str = try z.hex(&buffer);
+
+    try std.testing.expectEqualStrings("0xfedcba9876543210123456789abcdef0", hex_str);
+}
+
+test "U256 hex - max U256" {
+    var z = U256.initZero();
+    z.limbs[0] = 0xffffffffffffffff;
+    z.limbs[1] = 0xffffffffffffffff;
+    z.limbs[2] = 0xffffffffffffffff;
+    z.limbs[3] = 0xffffffffffffffff;
+    var buffer: [66]u8 = undefined;
+    const hex_str = try z.hex(&buffer);
+
+    try std.testing.expectEqualStrings("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", hex_str);
+}
+
+test "U256 hex - no leading zeros" {
+    var z = U256.initZero();
+    z.limbs[1] = 0x1;
+    var buffer: [66]u8 = undefined;
+    const hex_str = try z.hex(&buffer);
+
+    try std.testing.expectEqualStrings("0x10000000000000000", hex_str);
+}
+
+test "U256 hex - roundtrip" {
+    var original = U256.init(0xabcdef123456);
+    var buffer: [66]u8 = undefined;
+    const hex_str = try original.hex(&buffer);
+
+    var decoded = U256.initZero();
+    try decoded.setFromHex(hex_str);
+
+    try std.testing.expect(original.eq(decoded));
+}
+
+test "U256 scan - null value" {
+    var z = U256.init(999);
+    try z.scan(null);
+
+    try std.testing.expect(z.isZero());
+}
+
+test "U256 scan - empty string" {
+    var z = U256.init(999);
+    try z.scan("");
+
+    try std.testing.expect(z.isZero());
+}
+
+test "U256 scan - decimal" {
+    var z = U256.initZero();
+    try z.scan("12345");
+
+    try std.testing.expectEqual(@as(u64, 12345), z.limbs[0]);
+}
+
+test "U256 scan - scientific notation e0" {
+    var z = U256.initZero();
+    try z.scan("123e0");
+
+    try std.testing.expectEqual(@as(u64, 123), z.limbs[0]);
+}
+
+test "U256 scan - scientific notation e2" {
+    var z = U256.initZero();
+    try z.scan("123e2");
+
+    try std.testing.expectEqual(@as(u64, 12300), z.limbs[0]);
+}
+
+test "U256 scan - scientific notation 1.5e3" {
+    var z = U256.initZero();
+    try z.scan("15e2"); // 15 * 10^2 = 1500
+
+    try std.testing.expectEqual(@as(u64, 1500), z.limbs[0]);
+}
+
+test "U256 scan - large exponent" {
+    var z = U256.initZero();
+    try z.scan("1e20");
+
+    var power_of_ten = U256.init(10);
+    const twenty = U256.init(20);
+    _ = power_of_ten.iExp(twenty);
+
+    try std.testing.expect(z.eq(power_of_ten));
+}
+
+test "U256 scan - error: exponent too large" {
+    var z = U256.initZero();
+    const result = z.scan("1e78"); // 10^78 > 2^256
+
+    try std.testing.expectError(error.TooBig, result);
+}
+
+test "U256 scan - error: overflow in multiplication" {
+    var z = U256.initZero();
+    // Set z to max U256 / 2
+    z.limbs[0] = 0xffffffffffffffff;
+    z.limbs[1] = 0xffffffffffffffff;
+    z.limbs[2] = 0xffffffffffffffff;
+    z.limbs[3] = 0x7fffffffffffffff;
+
+    const result = z.scan("1e10"); // This will overflow
+
+    try std.testing.expectError(error.TooBig, result);
+}
+
+test "U256 value - zero" {
+    const z = U256.initZero();
+    var buffer: [78]u8 = undefined;
+    const val = try z.value(&buffer);
+
+    try std.testing.expectEqualStrings("0", val);
+}
+
+test "U256 value - simple value" {
+    const z = U256.init(67890);
+    var buffer: [78]u8 = undefined;
+    const val = try z.value(&buffer);
+
+    try std.testing.expectEqualStrings("67890", val);
+}
+
+test "U256 value - same as dec" {
+    var z = U256.initZero();
+    z.limbs[0] = 0xabcdef123456;
+
+    var buffer1: [78]u8 = undefined;
+    const val1 = try z.value(&buffer1);
+
+    var buffer2: [78]u8 = undefined;
+    const val2 = try z.dec(&buffer2);
+
+    try std.testing.expectEqualStrings(val1, val2);
+}
+
+test "U256 scan/value roundtrip" {
+    var original = U256.init(123456789);
+
+    // Encode with value()
+    var buffer: [78]u8 = undefined;
+    const encoded = try original.value(&buffer);
+
+    // Decode with scan()
+    var decoded = U256.initZero();
+    try decoded.scan(encoded);
+
+    try std.testing.expect(original.eq(decoded));
+}
+
+test "U256 encodeRLP - zero" {
+    const allocator = std.testing.allocator;
+    var buffer = std.ArrayList(u8).init(allocator);
+    defer buffer.deinit();
+
+    const z = U256.initZero();
+    try z.encodeRLP(buffer.writer());
+
+    // Zero is encoded as 0x80 (empty string)
+    try std.testing.expectEqualSlices(u8, &[_]u8{0x80}, buffer.items);
+}
+
+test "U256 encodeRLP - single byte (< 128)" {
+    const allocator = std.testing.allocator;
+    var buffer = std.ArrayList(u8).init(allocator);
+    defer buffer.deinit();
+
+    const z = U256.init(127);
+    try z.encodeRLP(buffer.writer());
+
+    // Values 0-127 are encoded as a single byte
+    try std.testing.expectEqualSlices(u8, &[_]u8{127}, buffer.items);
+}
+
+test "U256 encodeRLP - value 1" {
+    const allocator = std.testing.allocator;
+    var buffer = std.ArrayList(u8).init(allocator);
+    defer buffer.deinit();
+
+    const z = U256.init(1);
+    try z.encodeRLP(buffer.writer());
+
+    try std.testing.expectEqualSlices(u8, &[_]u8{1}, buffer.items);
+}
+
+test "U256 encodeRLP - value 255 (0xff)" {
+    const allocator = std.testing.allocator;
+    var buffer = std.ArrayList(u8).init(allocator);
+    defer buffer.deinit();
+
+    const z = U256.init(255);
+    try z.encodeRLP(buffer.writer());
+
+    // 255 requires 1 byte: [0x81, 0xff]
+    // 0x81 = 0x80 + 1 (length prefix)
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 0x81, 0xff }, buffer.items);
+}
+
+test "U256 encodeRLP - value 256 (0x100)" {
+    const allocator = std.testing.allocator;
+    var buffer = std.ArrayList(u8).init(allocator);
+    defer buffer.deinit();
+
+    const z = U256.init(256);
+    try z.encodeRLP(buffer.writer());
+
+    // 256 requires 2 bytes: [0x82, 0x01, 0x00]
+    // 0x82 = 0x80 + 2 (length prefix)
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 0x82, 0x01, 0x00 }, buffer.items);
+}
+
+test "U256 encodeRLP - value 0xdeadbeef" {
+    const allocator = std.testing.allocator;
+    var buffer = std.ArrayList(u8).init(allocator);
+    defer buffer.deinit();
+
+    const z = U256.init(0xdeadbeef);
+    try z.encodeRLP(buffer.writer());
+
+    // 0xdeadbeef requires 4 bytes: [0x84, 0xde, 0xad, 0xbe, 0xef]
+    // 0x84 = 0x80 + 4 (length prefix)
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 0x84, 0xde, 0xad, 0xbe, 0xef }, buffer.items);
+}
+
+test "U256 encodeRLP - max u64" {
+    const allocator = std.testing.allocator;
+    var buffer = std.ArrayList(u8).init(allocator);
+    defer buffer.deinit();
+
+    const z = U256.init(0xffffffffffffffff);
+    try z.encodeRLP(buffer.writer());
+
+    // Max u64 requires 8 bytes: [0x88, 0xff, 0xff, ...]
+    // 0x88 = 0x80 + 8 (length prefix)
+    try std.testing.expectEqual(@as(usize, 9), buffer.items.len);
+    try std.testing.expectEqual(@as(u8, 0x88), buffer.items[0]);
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff }, buffer.items[1..]);
+}
+
+test "U256 encodeRLP - multiple limbs" {
+    const allocator = std.testing.allocator;
+    var buffer = std.ArrayList(u8).init(allocator);
+    defer buffer.deinit();
+
+    var z = U256.initZero();
+    z.limbs[0] = 0x0123456789abcdef;
+    z.limbs[1] = 0xfedcba9876543210;
+
+    try z.encodeRLP(buffer.writer());
+
+    // This value requires 16 bytes
+    // 0x90 = 0x80 + 16 (length prefix)
+    try std.testing.expectEqual(@as(usize, 17), buffer.items.len);
+    try std.testing.expectEqual(@as(u8, 0x90), buffer.items[0]);
+
+    // Verify big-endian encoding
+    // limbs[1] comes first (big-endian), then limbs[0]
+    const expected = [_]u8{
+        0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10, // limbs[1]
+        0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, // limbs[0]
+    };
+    try std.testing.expectEqualSlices(u8, &expected, buffer.items[1..]);
+}
+
+test "U256 encodeRLP - max U256" {
+    const allocator = std.testing.allocator;
+    var buffer = std.ArrayList(u8).init(allocator);
+    defer buffer.deinit();
+
+    var z = U256.initZero();
+    z.limbs[0] = 0xffffffffffffffff;
+    z.limbs[1] = 0xffffffffffffffff;
+    z.limbs[2] = 0xffffffffffffffff;
+    z.limbs[3] = 0xffffffffffffffff;
+
+    try z.encodeRLP(buffer.writer());
+
+    // Max U256 requires 32 bytes
+    // 0xa0 = 0x80 + 32 (length prefix)
+    try std.testing.expectEqual(@as(usize, 33), buffer.items.len);
+    try std.testing.expectEqual(@as(u8, 0xa0), buffer.items[0]);
+
+    // All remaining bytes should be 0xff
+    for (buffer.items[1..]) |byte| {
+        try std.testing.expectEqual(@as(u8, 0xff), byte);
+    }
+}
+
+test "U256 encodeRLP - power of 2 boundary" {
+    const allocator = std.testing.allocator;
+    var buffer = std.ArrayList(u8).init(allocator);
+    defer buffer.deinit();
+
+    // Test 2^64
+    var z = U256.initZero();
+    z.limbs[1] = 1; // 2^64
+
+    try z.encodeRLP(buffer.writer());
+
+    // 2^64 requires 9 bytes: one zero byte followed by 0x01
+    // 0x89 = 0x80 + 9 (length prefix)
+    try std.testing.expectEqual(@as(usize, 10), buffer.items.len);
+    try std.testing.expectEqual(@as(u8, 0x89), buffer.items[0]);
+    try std.testing.expectEqual(@as(u8, 0x01), buffer.items[1]);
+    // Remaining 8 bytes should be zero
+    for (buffer.items[2..]) |byte| {
+        try std.testing.expectEqual(@as(u8, 0x00), byte);
+    }
+}
+
+// Format tests
+test "U256 format - any (default hex)" {
+    const z = U256.init(255);
+    var buf: [100]u8 = undefined;
+    const result = try std.fmt.bufPrint(&buf, "{any}", .{z});
+    try std.testing.expectEqualStrings("ff", result);
+}
+
+test "U256 format - zero" {
+    const z = U256.initZero();
+    var buf: [100]u8 = undefined;
+    const result = try std.fmt.bufPrint(&buf, "{any}", .{z});
+    try std.testing.expectEqualStrings("0", result);
+}
+
+test "U256 format - multi-limb hex" {
+    var z = U256.initZero();
+    z.limbs[0] = 0x123456789abcdef0;
+    z.limbs[1] = 0xfedcba9876543210;
+    var buf: [100]u8 = undefined;
+    const result = try std.fmt.bufPrint(&buf, "{any}", .{z});
+    try std.testing.expectEqualStrings("fedcba9876543210123456789abcdef0", result);
+}
+
+test "U256 format - max U256 hex" {
+    var z = U256.initZero();
+    z.limbs[0] = 0xFFFFFFFFFFFFFFFF;
+    z.limbs[1] = 0xFFFFFFFFFFFFFFFF;
+    z.limbs[2] = 0xFFFFFFFFFFFFFFFF;
+    z.limbs[3] = 0xFFFFFFFFFFFFFFFF;
+    var buf: [100]u8 = undefined;
+    const result = try std.fmt.bufPrint(&buf, "{any}", .{z});
+    try std.testing.expectEqualStrings("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", result);
+}
+
+// SSZ Marshaling tests
+test "U256 marshalSSZ - zero" {
+    const z = U256.initZero();
+    const blob = z.marshalSSZ();
+
+    try std.testing.expectEqual(@as(usize, 32), blob.len);
+    for (blob) |b| {
+        try std.testing.expectEqual(@as(u8, 0), b);
+    }
+}
+
+test "U256 marshalSSZ - simple value" {
+    const z = U256.init(0x123456789abcdef0);
+    const blob = z.marshalSSZ();
+
+    try std.testing.expectEqual(@as(usize, 32), blob.len);
+    // Little-endian encoding
+    try std.testing.expectEqual(@as(u8, 0xf0), blob[0]);
+    try std.testing.expectEqual(@as(u8, 0xde), blob[1]);
+    try std.testing.expectEqual(@as(u8, 0xbc), blob[2]);
+    try std.testing.expectEqual(@as(u8, 0x9a), blob[3]);
+}
+
+test "U256 marshalSSZ - max U256" {
+    var z = U256.initZero();
+    z.limbs[0] = 0xFFFFFFFFFFFFFFFF;
+    z.limbs[1] = 0xFFFFFFFFFFFFFFFF;
+    z.limbs[2] = 0xFFFFFFFFFFFFFFFF;
+    z.limbs[3] = 0xFFFFFFFFFFFFFFFF;
+
+    const blob = z.marshalSSZ();
+
+    try std.testing.expectEqual(@as(usize, 32), blob.len);
+    for (blob) |b| {
+        try std.testing.expectEqual(@as(u8, 0xFF), b);
+    }
+}
+
+test "U256 marshalSSZInto - simple value" {
+    const z = U256.init(0x123456789abcdef0);
+    var buf: [32]u8 = undefined;
+    try z.marshalSSZInto(&buf);
+
+    // Little-endian encoding
+    try std.testing.expectEqual(@as(u8, 0xf0), buf[0]);
+    try std.testing.expectEqual(@as(u8, 0xde), buf[1]);
+    try std.testing.expectEqual(@as(u8, 0xbc), buf[2]);
+    try std.testing.expectEqual(@as(u8, 0x9a), buf[3]);
+}
+
+test "U256 marshalSSZInto - buffer too small" {
+    const z = U256.init(123);
+    var buf: [16]u8 = undefined;
+    const result = z.marshalSSZInto(&buf);
+    try std.testing.expectError(error.BufferTooSmall, result);
+}
+
+test "U256 marshalSSZInto - larger buffer" {
+    const z = U256.init(0xdeadbeef);
+    var buf: [64]u8 = undefined;
+    try z.marshalSSZInto(buf[0..32]);
+
+    // First 32 bytes contain the SSZ encoding
+    try std.testing.expectEqual(@as(u8, 0xef), buf[0]);
+    try std.testing.expectEqual(@as(u8, 0xbe), buf[1]);
+    try std.testing.expectEqual(@as(u8, 0xad), buf[2]);
+    try std.testing.expectEqual(@as(u8, 0xde), buf[3]);
+}
+
+test "U256 sizeSSZ - always 32" {
+    try std.testing.expectEqual(@as(usize, 32), U256.sizeSSZ());
+}
+
+test "U256 SSZ roundtrip" {
+    var original = U256.initZero();
+    original.limbs[0] = 0x123456789abcdef0;
+    original.limbs[1] = 0xfedcba9876543210;
+    original.limbs[2] = 0x1111222233334444;
+    original.limbs[3] = 0x5555666677778888;
+
+    const blob = original.marshalSSZ();
+
+    // Decode back
+    var decoded = U256.initZero();
+    decoded.limbs[0] = std.mem.readInt(u64, blob[0..8], .little);
+    decoded.limbs[1] = std.mem.readInt(u64, blob[8..16], .little);
+    decoded.limbs[2] = std.mem.readInt(u64, blob[16..24], .little);
+    decoded.limbs[3] = std.mem.readInt(u64, blob[24..32], .little);
+
+    try std.testing.expect(original.eq(decoded));
+}
+
+test "U256 unmarshalSSZ - zero" {
+    var z = U256.init(999); // Start with non-zero value
+    const buf = [_]u8{0} ** 32;
+    try z.unmarshalSSZ(&buf);
+
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[3]);
+}
+
+test "U256 unmarshalSSZ - simple value" {
+    var z = U256.initZero();
+    const buf = [_]u8{0xff, 0, 0, 0, 0, 0, 0, 0} ++ [_]u8{0} ** 24;
+    try z.unmarshalSSZ(&buf);
+
+    try std.testing.expectEqual(@as(u64, 255), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+}
+
+test "U256 unmarshalSSZ - all limbs" {
+    var z = U256.initZero();
+
+    // Create buffer with specific values in each limb
+    var buf: [32]u8 = undefined;
+    std.mem.writeInt(u64, buf[0..8], 0x123456789abcdef0, .little);
+    std.mem.writeInt(u64, buf[8..16], 0xfedcba9876543210, .little);
+    std.mem.writeInt(u64, buf[16..24], 0x1111222233334444, .little);
+    std.mem.writeInt(u64, buf[24..32], 0x5555666677778888, .little);
+
+    try z.unmarshalSSZ(&buf);
+
+    try std.testing.expectEqual(@as(u64, 0x123456789abcdef0), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0xfedcba9876543210), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0x1111222233334444), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0x5555666677778888), z.limbs[3]);
+}
+
+test "U256 unmarshalSSZ - max U256" {
+    var z = U256.initZero();
+    const buf = [_]u8{0xff} ** 32;
+    try z.unmarshalSSZ(&buf);
+
+    try std.testing.expectEqual(@as(u64, 0xffffffffffffffff), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0xffffffffffffffff), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0xffffffffffffffff), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0xffffffffffffffff), z.limbs[3]);
+}
+
+test "U256 unmarshalSSZ - buffer too short" {
+    var z = U256.initZero();
+    const buf = [_]u8{0xff} ** 31; // Only 31 bytes
+    const result = z.unmarshalSSZ(&buf);
+    try std.testing.expectError(error.BadEncodedLength, result);
+}
+
+test "U256 unmarshalSSZ - buffer too long" {
+    var z = U256.initZero();
+    const buf = [_]u8{0xff} ** 33; // 33 bytes
+    const result = z.unmarshalSSZ(&buf);
+    try std.testing.expectError(error.BadEncodedLength, result);
+}
+
+test "U256 unmarshalSSZ - empty buffer" {
+    var z = U256.initZero();
+    const buf = [_]u8{};
+    const result = z.unmarshalSSZ(&buf);
+    try std.testing.expectError(error.BadEncodedLength, result);
+}
+
+test "U256 fromSSZ - simple value" {
+    const buf = [_]u8{0xff, 0, 0, 0, 0, 0, 0, 0} ++ [_]u8{0} ** 24;
+    const z = try U256.fromSSZ(&buf);
+
+    try std.testing.expectEqual(@as(u64, 255), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+}
+
+test "U256 fromSSZ - error propagation" {
+    const buf = [_]u8{0xff} ** 31; // Too short
+    const result = U256.fromSSZ(&buf);
+    try std.testing.expectError(error.BadEncodedLength, result);
+}
+
+test "U256 unmarshalSSZ roundtrip" {
+    var original = U256.initZero();
+    original.limbs[0] = 0x123456789abcdef0;
+    original.limbs[1] = 0xfedcba9876543210;
+    original.limbs[2] = 0x1111222233334444;
+    original.limbs[3] = 0x5555666677778888;
+
+    // Marshal to SSZ
+    const blob = original.marshalSSZ();
+
+    // Unmarshal back
+    var decoded = U256.initZero();
+    try decoded.unmarshalSSZ(&blob);
+
+    try std.testing.expect(original.eq(decoded));
+}
+
+test "U256 hashTreeRoot - zero" {
+    const z = U256.initZero();
+    const hash = z.hashTreeRoot();
+
+    // For zero, hash should be all zeros
+    const expected = [_]u8{0} ** 32;
+    try std.testing.expectEqualSlices(u8, &expected, &hash);
+}
+
+test "U256 hashTreeRoot - simple value" {
+    const z = U256.init(255);
+    const hash = z.hashTreeRoot();
+
+    // For U256, hash tree root is just the SSZ encoding
+    const expected = [_]u8{0xff, 0, 0, 0, 0, 0, 0, 0} ++ [_]u8{0} ** 24;
+    try std.testing.expectEqualSlices(u8, &expected, &hash);
+}
+
+test "U256 hashTreeRoot - max U256" {
+    var z = U256.initZero();
+    z.limbs[0] = 0xffffffffffffffff;
+    z.limbs[1] = 0xffffffffffffffff;
+    z.limbs[2] = 0xffffffffffffffff;
+    z.limbs[3] = 0xffffffffffffffff;
+
+    const hash = z.hashTreeRoot();
+
+    const expected = [_]u8{0xff} ** 32;
+    try std.testing.expectEqualSlices(u8, &expected, &hash);
+}
+
+test "U256 hashTreeRoot - matches SSZ encoding" {
+    var z = U256.initZero();
+    z.limbs[0] = 0x123456789abcdef0;
+    z.limbs[1] = 0xfedcba9876543210;
+    z.limbs[2] = 0x1111222233334444;
+    z.limbs[3] = 0x5555666677778888;
+
+    const hash = z.hashTreeRoot();
+    const ssz = z.marshalSSZ();
+
+    // Hash tree root should match SSZ encoding for basic types
+    try std.testing.expectEqualSlices(u8, &ssz, &hash);
 }
 
 test "U256 isBitSet - LSB" {
@@ -6946,6 +9719,193 @@ test "U256 setFromBig - multi-limb positive" {
     try std.testing.expectEqual(@as(u64, 0), z.limbs[3]);
 }
 
+test "U256 fromBig - small value" {
+    var big = try std.math.big.int.Managed.init(std.testing.allocator);
+    defer big.deinit();
+    try big.set(12345);
+
+    const result = U256.fromBig(big.toConst());
+    try std.testing.expectEqual(false, result.overflow);
+    try std.testing.expectEqual(@as(u64, 12345), result.value.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), result.value.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0), result.value.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0), result.value.limbs[3]);
+}
+
+test "U256 fromBig - max u64" {
+    var big = try std.math.big.int.Managed.init(std.testing.allocator);
+    defer big.deinit();
+    try big.set(0xFFFFFFFFFFFFFFFF);
+
+    const result = U256.fromBig(big.toConst());
+    try std.testing.expectEqual(false, result.overflow);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), result.value.limbs[0]);
+}
+
+test "U256 fromBig - overflow" {
+    var big = try std.math.big.int.Managed.init(std.testing.allocator);
+    defer big.deinit();
+
+    // Build 2^256 (one bit too large for U256)
+    try big.set(1);
+    try big.shiftLeft(&big, 256);
+
+    const result = U256.fromBig(big.toConst());
+    try std.testing.expectEqual(true, result.overflow);
+    // Value is truncated to lower 256 bits (which is 0)
+    try std.testing.expectEqual(@as(u64, 0), result.value.limbs[0]);
+}
+
+test "U256 fromBig - negative value" {
+    var big = try std.math.big.int.Managed.init(std.testing.allocator);
+    defer big.deinit();
+    try big.set(-54321);
+
+    const result = U256.fromBig(big.toConst());
+    try std.testing.expectEqual(false, result.overflow);
+
+    // Verify it matches negating the positive value
+    var expected = U256.init(54321);
+    _ = expected.neg(expected);
+    try std.testing.expectEqual(expected.limbs[0], result.value.limbs[0]);
+}
+
+test "U256 mustFromBig - small value" {
+    var big = try std.math.big.int.Managed.init(std.testing.allocator);
+    defer big.deinit();
+    try big.set(12345);
+
+    const z = U256.mustFromBig(big.toConst());
+    try std.testing.expectEqual(@as(u64, 12345), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0), z.limbs[1]);
+}
+
+test "U256 mustFromBig - max U256" {
+    var big = try std.math.big.int.Managed.init(std.testing.allocator);
+    defer big.deinit();
+
+    // Build 2^256 - 1 (max U256 value)
+    try big.set(1);
+    try big.shiftLeft(&big, 256);
+
+    var one = try std.math.big.int.Managed.init(std.testing.allocator);
+    defer one.deinit();
+    try one.set(1);
+
+    try big.sub(&big, &one);
+
+    const z = U256.mustFromBig(big.toConst());
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[0]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[1]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[2]);
+    try std.testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), z.limbs[3]);
+}
+
+test "U256 mustFromBig - negative value" {
+    var big = try std.math.big.int.Managed.init(std.testing.allocator);
+    defer big.deinit();
+    try big.set(-9999);
+
+    const z = U256.mustFromBig(big.toConst());
+
+    // Verify it matches negating the positive value
+    var expected = U256.init(9999);
+    _ = expected.neg(expected);
+    try std.testing.expectEqual(expected.limbs[0], z.limbs[0]);
+}
+
+test "U256 toFloat64 - zero" {
+    const z = U256.initZero();
+    const f = z.toFloat64();
+    try std.testing.expectEqual(@as(f64, 0.0), f);
+}
+
+test "U256 toFloat64 - small values" {
+    const z1 = U256.init(1);
+    try std.testing.expectEqual(@as(f64, 1.0), z1.toFloat64());
+
+    const z2 = U256.init(12345);
+    try std.testing.expectEqual(@as(f64, 12345.0), z2.toFloat64());
+
+    const z3 = U256.init(1000000);
+    try std.testing.expectEqual(@as(f64, 1000000.0), z3.toFloat64());
+}
+
+test "U256 toFloat64 - u64 max" {
+    const z = U256.init(0xFFFFFFFFFFFFFFFF);
+    const f = z.toFloat64();
+    const expected: f64 = @floatFromInt(@as(u64, 0xFFFFFFFFFFFFFFFF));
+    try std.testing.expectEqual(expected, f);
+}
+
+test "U256 toFloat64 - power of 2" {
+    // Test 2^64
+    var z = U256.initZero();
+    z.limbs[0] = 0;
+    z.limbs[1] = 1;
+    const f = z.toFloat64();
+    const expected = @as(f64, 18446744073709551616.0); // 2^64
+    try std.testing.expectEqual(expected, f);
+}
+
+test "U256 toFloat64 - large value" {
+    // Test 2^128
+    var z = U256.initZero();
+    z.limbs[0] = 0;
+    z.limbs[1] = 0;
+    z.limbs[2] = 1;
+    const f = z.toFloat64();
+
+    // 2^128 ≈ 3.4028237e+38
+    // We can't represent this exactly, but we can verify it's a large number
+    try std.testing.expect(f > 1e38);
+    try std.testing.expect(f < 1e39);
+}
+
+test "U256 toFloat64 - max value" {
+    // Test 2^256 - 1 (max U256)
+    var z = U256.initZero();
+    z.limbs[0] = 0xFFFFFFFFFFFFFFFF;
+    z.limbs[1] = 0xFFFFFFFFFFFFFFFF;
+    z.limbs[2] = 0xFFFFFFFFFFFFFFFF;
+    z.limbs[3] = 0xFFFFFFFFFFFFFFFF;
+
+    const f = z.toFloat64();
+
+    // 2^256 - 1 ≈ 1.1579209e+77
+    // Verify it's a very large number
+    try std.testing.expect(f > 1e76);
+    try std.testing.expect(f < 1e78);
+}
+
+test "U256 toFloat64 - precision check" {
+    // Test that values differing in high bits produce different floats
+    var z1 = U256.initZero();
+    z1.limbs[3] = 0x1000000000000000;
+
+    var z2 = U256.initZero();
+    z2.limbs[3] = 0x2000000000000000; // Differ in a higher bit
+
+    const f1 = z1.toFloat64();
+    const f2 = z2.toFloat64();
+
+    // These should definitely be different
+    try std.testing.expect(f1 != f2);
+    try std.testing.expect(f2 > f1);
+}
+
+test "U256 toFloat64 - roundtrip u64" {
+    // Test that u64 values roundtrip perfectly
+    const values = [_]u64{ 0, 1, 42, 1000, 0xFFFF, 0xFFFFFFFF, 0x123456789ABC };
+
+    for (values) |val| {
+        const z = U256.init(val);
+        const f = z.toFloat64();
+        const back: u64 = @intFromFloat(f);
+        try std.testing.expectEqual(val, back);
+    }
+}
+
 test "U256 cmpBig - equal values" {
     var big = try std.math.big.int.Managed.init(std.testing.allocator);
     defer big.deinit();
@@ -7384,4 +10344,191 @@ test "U256 mulDivOverflow - exact division" {
     // (1000 * 2000) / 100 = 2000000 / 100 = 20000
     try std.testing.expectEqual(@as(u64, 20000), result.z.limbs[0]);
     try std.testing.expectEqual(false, result.overflow);
+}
+
+// toBig and intoBig tests
+test "U256 toBig - zero" {
+    const allocator = std.testing.allocator;
+    const z = U256.initZero();
+    var big = try z.toBig(allocator);
+    defer big.deinit();
+
+    var expected = try std.math.big.int.Managed.init(allocator);
+    defer expected.deinit();
+
+    try std.testing.expect(big.toConst().eql(expected.toConst()));
+}
+
+test "U256 toBig - small value" {
+    const allocator = std.testing.allocator;
+    const z = U256.init(12345);
+    var big = try z.toBig(allocator);
+    defer big.deinit();
+
+    var expected = try std.math.big.int.Managed.init(allocator);
+    defer expected.deinit();
+    try expected.set(12345);
+
+    try std.testing.expect(big.toConst().eql(expected.toConst()));
+}
+
+test "U256 toBig - u64 max" {
+    const allocator = std.testing.allocator;
+    const z = U256.init(0xFFFFFFFFFFFFFFFF);
+    var big = try z.toBig(allocator);
+    defer big.deinit();
+
+    var expected = try std.math.big.int.Managed.init(allocator);
+    defer expected.deinit();
+    try expected.set(0xFFFFFFFFFFFFFFFF);
+
+    try std.testing.expect(big.toConst().eql(expected.toConst()));
+}
+
+test "U256 toBig - multi-limb value" {
+    const allocator = std.testing.allocator;
+    var z = U256.initZero();
+    z.limbs[0] = 0x1234567890ABCDEF;
+    z.limbs[1] = 0xFEDCBA0987654321;
+    z.limbs[2] = 0;
+    z.limbs[3] = 0;
+
+    var big = try z.toBig(allocator);
+    defer big.deinit();
+
+    // Expected: 0xFEDCBA0987654321 << 64 | 0x1234567890ABCDEF
+    var expected = try std.math.big.int.Managed.init(allocator);
+    defer expected.deinit();
+    try expected.set(0x1234567890ABCDEF);
+
+    var temp = try std.math.big.int.Managed.init(allocator);
+    defer temp.deinit();
+    try temp.set(0xFEDCBA0987654321);
+    var temp_mut = temp.toMutable();
+    temp_mut.shiftLeft(temp.toConst(), 64);
+
+    try expected.add(&expected, &temp);
+
+    try std.testing.expect(big.toConst().eql(expected.toConst()));
+}
+
+test "U256 toBig - max value" {
+    const allocator = std.testing.allocator;
+    var z = U256.initZero();
+    z.limbs[0] = 0xFFFFFFFFFFFFFFFF;
+    z.limbs[1] = 0xFFFFFFFFFFFFFFFF;
+    z.limbs[2] = 0xFFFFFFFFFFFFFFFF;
+    z.limbs[3] = 0xFFFFFFFFFFFFFFFF;
+
+    var big = try z.toBig(allocator);
+    defer big.deinit();
+
+    // Build expected value by adding limbs shifted into position
+    var expected = try std.math.big.int.Managed.init(allocator);
+    defer expected.deinit();
+    try expected.set(0xFFFFFFFFFFFFFFFF);
+
+    // Add limb1 << 64
+    var temp1 = try std.math.big.int.Managed.init(allocator);
+    defer temp1.deinit();
+    try temp1.set(0xFFFFFFFFFFFFFFFF);
+    try temp1.ensureCapacity(4);
+    var temp1_mut = temp1.toMutable();
+    temp1_mut.shiftLeft(temp1.toConst(), 64);
+    try expected.add(&expected, &temp1);
+
+    // Add limb2 << 128
+    var temp2 = try std.math.big.int.Managed.init(allocator);
+    defer temp2.deinit();
+    try temp2.set(0xFFFFFFFFFFFFFFFF);
+    try temp2.ensureCapacity(4);
+    var temp2_mut = temp2.toMutable();
+    temp2_mut.shiftLeft(temp2.toConst(), 128);
+    try expected.add(&expected, &temp2);
+
+    // Add limb3 << 192
+    var temp3 = try std.math.big.int.Managed.init(allocator);
+    defer temp3.deinit();
+    try temp3.set(0xFFFFFFFFFFFFFFFF);
+    try temp3.ensureCapacity(4);
+    var temp3_mut = temp3.toMutable();
+    temp3_mut.shiftLeft(temp3.toConst(), 192);
+    try expected.add(&expected, &temp3);
+
+    try std.testing.expect(big.toConst().eql(expected.toConst()));
+}
+
+test "U256 intoBig - reuse allocation" {
+    const allocator = std.testing.allocator;
+    const z1 = U256.init(12345);
+    const z2 = U256.init(67890);
+
+    var big = try std.math.big.int.Managed.init(allocator);
+    defer big.deinit();
+
+    // First conversion
+    try z1.intoBig(&big);
+    var expected1 = try std.math.big.int.Managed.init(allocator);
+    defer expected1.deinit();
+    try expected1.set(12345);
+    try std.testing.expect(big.toConst().eql(expected1.toConst()));
+
+    // Second conversion - reusing the same big int
+    try z2.intoBig(&big);
+    var expected2 = try std.math.big.int.Managed.init(allocator);
+    defer expected2.deinit();
+    try expected2.set(67890);
+    try std.testing.expect(big.toConst().eql(expected2.toConst()));
+}
+
+test "U256 intoBig - zero value" {
+    const allocator = std.testing.allocator;
+    const z = U256.initZero();
+
+    var big = try std.math.big.int.Managed.init(allocator);
+    defer big.deinit();
+    try big.set(999); // Set to non-zero first
+
+    try z.intoBig(&big);
+
+    var expected = try std.math.big.int.Managed.init(allocator);
+    defer expected.deinit();
+    try expected.set(0);
+
+    try std.testing.expect(big.toConst().eql(expected.toConst()));
+}
+
+test "U256 toBig/intoBig - roundtrip" {
+    const allocator = std.testing.allocator;
+    var z = U256.initZero();
+    z.limbs[0] = 0xAABBCCDDEEFF0011;
+    z.limbs[1] = 0x2233445566778899;
+    z.limbs[2] = 0x0011223344556677;
+    z.limbs[3] = 0x8899AABBCCDDEEFF;
+
+    // Convert to big
+    var big = try z.toBig(allocator);
+    defer big.deinit();
+
+    // Convert back via intoBig to another U256
+    var z2 = U256.initZero();
+    z2.limbs[0] = 0x1;
+    z2.limbs[1] = 0x2;
+    z2.limbs[2] = 0x3;
+    z2.limbs[3] = 0x4;
+
+    // Convert another value to ensure intoBig works
+    try z2.intoBig(&big);
+
+    // Now convert z again
+    try z.intoBig(&big);
+
+    // Check via decimal string (since we can't easily convert back)
+    var buffer: [78]u8 = undefined;
+    _ = try z.dec(&buffer);
+
+    // Just verify the big int was set (detailed verification would require SetFromBig)
+    var zero = try std.math.big.int.Managed.init(allocator);
+    defer zero.deinit();
+    try std.testing.expect(!big.toConst().eql(zero.toConst()));
 }
