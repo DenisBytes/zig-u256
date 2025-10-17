@@ -111,6 +111,596 @@ pub const U256 = struct {
         return self.limbs[0];
     }
 
+    /// Sets self to the value of a u64 and returns self.
+    pub fn setU64(self: *U256, val: u64) *U256 {
+        self.limbs[0] = val;
+        self.limbs[1] = 0;
+        self.limbs[2] = 0;
+        self.limbs[3] = 0;
+        return self;
+    }
+
+    /// Returns true if self can fit in a u64 (all upper limbs are zero).
+    pub fn isU64(self: U256) bool {
+        return (self.limbs[1] | self.limbs[2] | self.limbs[3]) == 0;
+    }
+
+    /// Sets self to 1 and returns self.
+    pub fn setOne(self: *U256) *U256 {
+        self.limbs[0] = 1;
+        self.limbs[1] = 0;
+        self.limbs[2] = 0;
+        self.limbs[3] = 0;
+        return self;
+    }
+
+    /// Sets all bits of self to 1 (sets to maximum U256 value) and returns self.
+    /// Result is 2^256 - 1 = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
+    pub fn setAllOne(self: *U256) *U256 {
+        self.limbs[0] = 0xFFFFFFFFFFFFFFFF;
+        self.limbs[1] = 0xFFFFFFFFFFFFFFFF;
+        self.limbs[2] = 0xFFFFFFFFFFFFFFFF;
+        self.limbs[3] = 0xFFFFFFFFFFFFFFFF;
+        return self;
+    }
+
+    /// Clears self (sets to zero) and returns self.
+    pub fn clear(self: *U256) *U256 {
+        self.limbs = [_]u64{0} ** 4;
+        return self;
+    }
+
+    /// Sets self to x and returns self.
+    pub fn set(self: *U256, x: U256) *U256 {
+        self.limbs = x.limbs;
+        return self;
+    }
+
+    /// Returns true if self is zero.
+    pub fn isZero(self: U256) bool {
+        return (self.limbs[0] | self.limbs[1] | self.limbs[2] | self.limbs[3]) == 0;
+    }
+
+    /// Returns true if self equals other.
+    pub fn eq(self: U256, other: U256) bool {
+        return self.limbs[0] == other.limbs[0] and
+            self.limbs[1] == other.limbs[1] and
+            self.limbs[2] == other.limbs[2] and
+            self.limbs[3] == other.limbs[3];
+    }
+
+    /// Returns true if self is less than other.
+    pub fn lt(self: U256, other: U256) bool {
+        if (self.limbs[3] != other.limbs[3]) return self.limbs[3] < other.limbs[3];
+        if (self.limbs[2] != other.limbs[2]) return self.limbs[2] < other.limbs[2];
+        if (self.limbs[1] != other.limbs[1]) return self.limbs[1] < other.limbs[1];
+        return self.limbs[0] < other.limbs[0];
+    }
+
+    /// Returns true if self is less than or equal to other.
+    pub fn lte(self: U256, other: U256) bool {
+        return self.lt(other) or self.eq(other);
+    }
+
+    /// Returns true if self is greater than other.
+    pub fn gt(self: U256, other: U256) bool {
+        return other.lt(self);
+    }
+
+    /// Returns true if self is greater than or equal to other.
+    pub fn gte(self: U256, other: U256) bool {
+        return other.lt(self) or self.eq(other);
+    }
+
+    /// Returns true if self < other when both are interpreted as signed integers.
+    /// Uses two's complement representation where MSB indicates sign.
+    pub fn slt(self: U256, other: U256) bool {
+        const self_sign = self.sign();
+        const other_sign = other.sign();
+
+        // Different signs: negative < positive
+        if (self_sign >= 0 and other_sign < 0) {
+            return false;
+        }
+        if (self_sign < 0 and other_sign >= 0) {
+            return true;
+        }
+
+        // Same sign: compare as unsigned
+        return self.lt(other);
+    }
+
+    /// Returns true if self > other when both are interpreted as signed integers.
+    /// Uses two's complement representation where MSB indicates sign.
+    pub fn sgt(self: U256, other: U256) bool {
+        const self_sign = self.sign();
+        const other_sign = other.sign();
+
+        // Different signs: positive > negative
+        if (self_sign >= 0 and other_sign < 0) {
+            return true;
+        }
+        if (self_sign < 0 and other_sign >= 0) {
+            return false;
+        }
+
+        // Same sign: compare as unsigned
+        return self.gt(other);
+    }
+
+    /// Returns true if self < n (where n is a u64).
+    pub fn ltU64(self: U256, n: u64) bool {
+        return self.limbs[0] < n and ((self.limbs[1] | self.limbs[2] | self.limbs[3]) == 0);
+    }
+
+    /// Returns true if self > n (where n is a u64).
+    pub fn gtU64(self: U256, n: u64) bool {
+        return self.limbs[0] > n or ((self.limbs[1] | self.limbs[2] | self.limbs[3]) != 0);
+    }
+
+    /// Returns the lower 64 bits of self.
+    pub fn lowerU64(self: U256) u64 {
+        return self.limbs[0];
+    }
+
+    /// Returns whether the value overflows 64 bits.
+    /// If this returns false, the value can safely fit in a u64.
+    pub fn overflowsU64(self: U256) bool {
+        return (self.limbs[1] | self.limbs[2] | self.limbs[3]) != 0;
+    }
+
+    /// Creates a new U256 identical to self.
+    pub fn clone(self: U256) U256 {
+        return self;
+    }
+
+    /// Sets self to -x mod 2^256 and returns self.
+    pub fn neg(self: *U256, x: U256) *U256 {
+        return self.sub(U256.initZero(), x);
+    }
+
+    /// Interprets x as a two's complement signed number and sets self to the absolute value.
+    /// Examples:
+    ///   Abs(0)        = 0
+    ///   Abs(1)        = 1
+    ///   Abs(2^255)    = -2^255 (stays the same, most negative value)
+    ///   Abs(2^256-1)  = 1 (interpreted as -1)
+    pub fn abs(self: *U256, x: U256) *U256 {
+        if (x.limbs[3] < 0x8000000000000000) {
+            return self.set(x);
+        }
+        return self.sub(U256.initZero(), x);
+    }
+
+    /// Returns the number of bits required to represent self.
+    pub fn bitLen(self: U256) usize {
+        if (self.limbs[3] != 0) {
+            return @as(usize, 192) + @as(usize, 64 - @clz(self.limbs[3]));
+        }
+        if (self.limbs[2] != 0) {
+            return @as(usize, 128) + @as(usize, 64 - @clz(self.limbs[2]));
+        }
+        if (self.limbs[1] != 0) {
+            return @as(usize, 64) + @as(usize, 64 - @clz(self.limbs[1]));
+        }
+        if (self.limbs[0] == 0) {
+            return 0;
+        }
+        return @as(usize, 64 - @clz(self.limbs[0]));
+    }
+
+    /// Returns the number of bytes required to represent self.
+    pub fn byteLen(self: U256) usize {
+        return (self.bitLen() + 7) / 8;
+    }
+
+    /// Returns true if bit n is set, where n = 0 is LSB.
+    /// The n must be <= 255.
+    pub fn isBitSet(self: U256, n: usize) bool {
+        assert(n <= 255);
+        const limb_index = n / 64;
+        const bit_offset = @as(u6, @intCast(n % 64));
+        return (self.limbs[limb_index] & (@as(u64, 1) << bit_offset)) != 0;
+    }
+
+    /// Writes all 32 bytes of self to the destination slice, including zero-bytes.
+    /// If dest is larger than 32 bytes, self will fill the first 32 bytes, leaving the rest untouched.
+    /// Returns error.BufferTooSmall if dest is smaller than 32 bytes.
+    pub fn putU256(self: U256, dest: []u8) error{BufferTooSmall}!void {
+        if (dest.len < 32) return error.BufferTooSmall;
+        mem.writeInt(u64, dest[0..8], self.limbs[3], .big);
+        mem.writeInt(u64, dest[8..16], self.limbs[2], .big);
+        mem.writeInt(u64, dest[16..24], self.limbs[1], .big);
+        mem.writeInt(u64, dest[24..32], self.limbs[0], .big);
+    }
+
+    /// Writes all 32 bytes of self to the destination array, including zero-bytes.
+    pub fn writeToArray32(self: U256, dest: *[32]u8) void {
+        mem.writeInt(u64, dest[0..8], self.limbs[3], .big);
+        mem.writeInt(u64, dest[8..16], self.limbs[2], .big);
+        mem.writeInt(u64, dest[16..24], self.limbs[1], .big);
+        mem.writeInt(u64, dest[24..32], self.limbs[0], .big);
+    }
+
+    /// Writes all 20 bytes of self to the destination array, including zero-bytes.
+    pub fn writeToArray20(self: U256, dest: *[20]u8) void {
+        mem.writeInt(u32, dest[0..4], @as(u32, @truncate(self.limbs[2])), .big);
+        mem.writeInt(u64, dest[4..12], self.limbs[1], .big);
+        mem.writeInt(u64, dest[12..20], self.limbs[0], .big);
+    }
+
+    /// Writes the minimal big-endian representation to the start of buf.
+    /// Returns the number of bytes written.
+    /// Returns 0 if buf is smaller than the minimal byte length.
+    pub fn writeBytes(self: U256, buf: []u8) usize {
+        const len = self.byteLen();
+        if (buf.len < len) return 0;
+
+        const full = self.bytes32();
+        @memcpy(buf[0..len], full[32 - len ..]);
+        return len;
+    }
+
+    /// Writes bytes to the end of buf (right-padded with the value at the end).
+    /// If buf is larger than 32 bytes, fills the first 32 bytes.
+    /// If buf is smaller than 32 bytes, only writes the least significant bytes.
+    /// Useful for filling fixed-size buffers like Ethereum addresses (20 bytes).
+    pub fn writeBytesToEnd(self: U256, buf: []u8) void {
+        if (buf.len == 0) return;
+
+        const full = self.bytes32();
+        const end: usize = @min(buf.len - 1, 31);
+
+        var i: usize = 0;
+        while (i <= end) : (i += 1) {
+            buf[end - i] = full[31 - i];
+        }
+    }
+
+    /// bytes32 returns the value of self as a 32-byte big-endian array.
+    pub fn bytes32(self: U256) [32]u8 {
+        var b: [32]u8 = undefined;
+
+        mem.writeInt(u64, b[0..8], self.limbs[3], .big);
+        mem.writeInt(u64, b[8..16], self.limbs[2], .big);
+        mem.writeInt(u64, b[16..24], self.limbs[1], .big);
+        mem.writeInt(u64, b[24..32], self.limbs[0], .big);
+
+        return b;
+    }
+
+    /// bytes20 returns the value of self as a 20-byte big-endian array.
+    pub fn bytes20(self: U256) [20]u8 {
+        var b: [20]u8 = undefined;
+
+        mem.writeInt(u32, b[0..4], @truncate(self.limbs[2]), .big);
+        mem.writeInt(u64, b[4..12], self.limbs[1], .big);
+        mem.writeInt(u64, b[12..20], self.limbs[0], .big);
+
+        return b;
+    }
+
+    /// Interprets buf as the bytes of a big-endian unsigned integer,
+    /// sets self to that value, and returns self.
+    /// If buf is larger than 32 bytes, only the last 32 bytes are used.
+    pub fn setBytes(self: *U256, buf: []const u8) *U256 {
+        if (buf.len == 0) {
+            return self.clear();
+        }
+
+        // If larger than 32 bytes, use only the last 32 bytes
+        const effective_buf = if (buf.len > 32) buf[buf.len - 32 ..] else buf;
+        const effective_len = @min(buf.len, 32);
+
+        switch (effective_len) {
+            1 => self.setBytes1(effective_buf),
+            2 => self.setBytes2(effective_buf),
+            3 => self.setBytes3(effective_buf),
+            4 => self.setBytes4(effective_buf),
+            5 => self.setBytes5(effective_buf),
+            6 => self.setBytes6(effective_buf),
+            7 => self.setBytes7(effective_buf),
+            8 => self.setBytes8(effective_buf),
+            9 => self.setBytes9(effective_buf),
+            10 => self.setBytes10(effective_buf),
+            11 => self.setBytes11(effective_buf),
+            12 => self.setBytes12(effective_buf),
+            13 => self.setBytes13(effective_buf),
+            14 => self.setBytes14(effective_buf),
+            15 => self.setBytes15(effective_buf),
+            16 => self.setBytes16(effective_buf),
+            17 => self.setBytes17(effective_buf),
+            18 => self.setBytes18(effective_buf),
+            19 => self.setBytes19(effective_buf),
+            20 => self.setBytes20(effective_buf),
+            21 => self.setBytes21(effective_buf),
+            22 => self.setBytes22(effective_buf),
+            23 => self.setBytes23(effective_buf),
+            24 => self.setBytes24(effective_buf),
+            25 => self.setBytes25(effective_buf),
+            26 => self.setBytes26(effective_buf),
+            27 => self.setBytes27(effective_buf),
+            28 => self.setBytes28(effective_buf),
+            29 => self.setBytes29(effective_buf),
+            30 => self.setBytes30(effective_buf),
+            31 => self.setBytes31(effective_buf),
+            32 => self.setBytes32(effective_buf),
+            else => unreachable,
+        }
+
+        return self;
+    }
+
+    // setBytes functions for each length (1-32 bytes)
+
+    fn setBytes1(self: *U256, buf: []const u8) void {
+        assert(buf.len == 1);
+        self.limbs[0] = buf[0];
+        self.limbs[1] = 0;
+        self.limbs[2] = 0;
+        self.limbs[3] = 0;
+    }
+
+    fn setBytes2(self: *U256, buf: []const u8) void {
+        assert(buf.len == 2);
+        self.limbs[0] = mem.readInt(u16, buf[0..2], .big);
+        self.limbs[1] = 0;
+        self.limbs[2] = 0;
+        self.limbs[3] = 0;
+    }
+
+    fn setBytes3(self: *U256, buf: []const u8) void {
+        assert(buf.len == 3);
+        self.limbs[0] = (@as(u64, buf[0]) << 16) | mem.readInt(u16, buf[1..3], .big);
+        self.limbs[1] = 0;
+        self.limbs[2] = 0;
+        self.limbs[3] = 0;
+    }
+
+    fn setBytes4(self: *U256, buf: []const u8) void {
+        assert(buf.len == 4);
+        self.limbs[0] = mem.readInt(u32, buf[0..4], .big);
+        self.limbs[1] = 0;
+        self.limbs[2] = 0;
+        self.limbs[3] = 0;
+    }
+
+    fn setBytes5(self: *U256, buf: []const u8) void {
+        assert(buf.len == 5);
+        self.limbs[0] = (@as(u64, buf[0]) << 32) | mem.readInt(u32, buf[1..5], .big);
+        self.limbs[1] = 0;
+        self.limbs[2] = 0;
+        self.limbs[3] = 0;
+    }
+
+    fn setBytes6(self: *U256, buf: []const u8) void {
+        assert(buf.len == 6);
+        self.limbs[0] = (@as(u64, mem.readInt(u16, buf[0..2], .big)) << 32) |
+            mem.readInt(u32, buf[2..6], .big);
+        self.limbs[1] = 0;
+        self.limbs[2] = 0;
+        self.limbs[3] = 0;
+    }
+
+    fn setBytes7(self: *U256, buf: []const u8) void {
+        assert(buf.len == 7);
+        self.limbs[0] = (@as(u64, buf[0]) << 48) |
+            (@as(u64, mem.readInt(u16, buf[1..3], .big)) << 32) |
+            mem.readInt(u32, buf[3..7], .big);
+        self.limbs[1] = 0;
+        self.limbs[2] = 0;
+        self.limbs[3] = 0;
+    }
+
+    fn setBytes8(self: *U256, buf: []const u8) void {
+        assert(buf.len == 8);
+        self.limbs[0] = mem.readInt(u64, buf[0..8], .big);
+        self.limbs[1] = 0;
+        self.limbs[2] = 0;
+        self.limbs[3] = 0;
+    }
+
+    fn setBytes9(self: *U256, buf: []const u8) void {
+        assert(buf.len == 9);
+        self.limbs[0] = mem.readInt(u64, buf[1..9], .big);
+        self.limbs[1] = buf[0];
+        self.limbs[2] = 0;
+        self.limbs[3] = 0;
+    }
+
+    fn setBytes10(self: *U256, buf: []const u8) void {
+        assert(buf.len == 10);
+        self.limbs[0] = mem.readInt(u64, buf[2..10], .big);
+        self.limbs[1] = mem.readInt(u16, buf[0..2], .big);
+        self.limbs[2] = 0;
+        self.limbs[3] = 0;
+    }
+
+    fn setBytes11(self: *U256, buf: []const u8) void {
+        assert(buf.len == 11);
+        self.limbs[0] = mem.readInt(u64, buf[3..11], .big);
+        self.limbs[1] = (@as(u64, buf[0]) << 16) | mem.readInt(u16, buf[1..3], .big);
+        self.limbs[2] = 0;
+        self.limbs[3] = 0;
+    }
+
+    fn setBytes12(self: *U256, buf: []const u8) void {
+        assert(buf.len == 12);
+        self.limbs[0] = mem.readInt(u64, buf[4..12], .big);
+        self.limbs[1] = mem.readInt(u32, buf[0..4], .big);
+        self.limbs[2] = 0;
+        self.limbs[3] = 0;
+    }
+
+    fn setBytes13(self: *U256, buf: []const u8) void {
+        assert(buf.len == 13);
+        self.limbs[0] = mem.readInt(u64, buf[5..13], .big);
+        self.limbs[1] = (@as(u64, buf[0]) << 32) | mem.readInt(u32, buf[1..5], .big);
+        self.limbs[2] = 0;
+        self.limbs[3] = 0;
+    }
+
+    fn setBytes14(self: *U256, buf: []const u8) void {
+        assert(buf.len == 14);
+        self.limbs[0] = mem.readInt(u64, buf[6..14], .big);
+        self.limbs[1] = (@as(u64, mem.readInt(u16, buf[0..2], .big)) << 32) |
+            mem.readInt(u32, buf[2..6], .big);
+        self.limbs[2] = 0;
+        self.limbs[3] = 0;
+    }
+
+    fn setBytes15(self: *U256, buf: []const u8) void {
+        assert(buf.len == 15);
+        self.limbs[0] = mem.readInt(u64, buf[7..15], .big);
+        self.limbs[1] = (@as(u64, buf[0]) << 48) |
+            (@as(u64, mem.readInt(u16, buf[1..3], .big)) << 32) |
+            mem.readInt(u32, buf[3..7], .big);
+        self.limbs[2] = 0;
+        self.limbs[3] = 0;
+    }
+
+    fn setBytes16(self: *U256, buf: []const u8) void {
+        assert(buf.len == 16);
+        self.limbs[0] = mem.readInt(u64, buf[8..16], .big);
+        self.limbs[1] = mem.readInt(u64, buf[0..8], .big);
+        self.limbs[2] = 0;
+        self.limbs[3] = 0;
+    }
+
+    fn setBytes17(self: *U256, buf: []const u8) void {
+        assert(buf.len == 17);
+        self.limbs[0] = mem.readInt(u64, buf[9..17], .big);
+        self.limbs[1] = mem.readInt(u64, buf[1..9], .big);
+        self.limbs[2] = buf[0];
+        self.limbs[3] = 0;
+    }
+
+    fn setBytes18(self: *U256, buf: []const u8) void {
+        assert(buf.len == 18);
+        self.limbs[0] = mem.readInt(u64, buf[10..18], .big);
+        self.limbs[1] = mem.readInt(u64, buf[2..10], .big);
+        self.limbs[2] = mem.readInt(u16, buf[0..2], .big);
+        self.limbs[3] = 0;
+    }
+
+    fn setBytes19(self: *U256, buf: []const u8) void {
+        assert(buf.len == 19);
+        self.limbs[0] = mem.readInt(u64, buf[11..19], .big);
+        self.limbs[1] = mem.readInt(u64, buf[3..11], .big);
+        self.limbs[2] = (@as(u64, buf[0]) << 16) | mem.readInt(u16, buf[1..3], .big);
+        self.limbs[3] = 0;
+    }
+
+    fn setBytes20(self: *U256, buf: []const u8) void {
+        assert(buf.len == 20);
+        self.limbs[0] = mem.readInt(u64, buf[12..20], .big);
+        self.limbs[1] = mem.readInt(u64, buf[4..12], .big);
+        self.limbs[2] = mem.readInt(u32, buf[0..4], .big);
+        self.limbs[3] = 0;
+    }
+
+    fn setBytes21(self: *U256, buf: []const u8) void {
+        assert(buf.len == 21);
+        self.limbs[0] = mem.readInt(u64, buf[13..21], .big);
+        self.limbs[1] = mem.readInt(u64, buf[5..13], .big);
+        self.limbs[2] = (@as(u64, buf[0]) << 32) | mem.readInt(u32, buf[1..5], .big);
+        self.limbs[3] = 0;
+    }
+
+    fn setBytes22(self: *U256, buf: []const u8) void {
+        assert(buf.len == 22);
+        self.limbs[0] = mem.readInt(u64, buf[14..22], .big);
+        self.limbs[1] = mem.readInt(u64, buf[6..14], .big);
+        self.limbs[2] = (@as(u64, mem.readInt(u16, buf[0..2], .big)) << 32) |
+            mem.readInt(u32, buf[2..6], .big);
+        self.limbs[3] = 0;
+    }
+
+    fn setBytes23(self: *U256, buf: []const u8) void {
+        assert(buf.len == 23);
+        self.limbs[0] = mem.readInt(u64, buf[15..23], .big);
+        self.limbs[1] = mem.readInt(u64, buf[7..15], .big);
+        self.limbs[2] = (@as(u64, buf[0]) << 48) |
+            (@as(u64, mem.readInt(u16, buf[1..3], .big)) << 32) |
+            mem.readInt(u32, buf[3..7], .big);
+        self.limbs[3] = 0;
+    }
+
+    fn setBytes24(self: *U256, buf: []const u8) void {
+        assert(buf.len == 24);
+        self.limbs[0] = mem.readInt(u64, buf[16..24], .big);
+        self.limbs[1] = mem.readInt(u64, buf[8..16], .big);
+        self.limbs[2] = mem.readInt(u64, buf[0..8], .big);
+        self.limbs[3] = 0;
+    }
+
+    fn setBytes25(self: *U256, buf: []const u8) void {
+        assert(buf.len == 25);
+        self.limbs[0] = mem.readInt(u64, buf[17..25], .big);
+        self.limbs[1] = mem.readInt(u64, buf[9..17], .big);
+        self.limbs[2] = mem.readInt(u64, buf[1..9], .big);
+        self.limbs[3] = buf[0];
+    }
+
+    fn setBytes26(self: *U256, buf: []const u8) void {
+        assert(buf.len == 26);
+        self.limbs[0] = mem.readInt(u64, buf[18..26], .big);
+        self.limbs[1] = mem.readInt(u64, buf[10..18], .big);
+        self.limbs[2] = mem.readInt(u64, buf[2..10], .big);
+        self.limbs[3] = mem.readInt(u16, buf[0..2], .big);
+    }
+
+    fn setBytes27(self: *U256, buf: []const u8) void {
+        assert(buf.len == 27);
+        self.limbs[0] = mem.readInt(u64, buf[19..27], .big);
+        self.limbs[1] = mem.readInt(u64, buf[11..19], .big);
+        self.limbs[2] = mem.readInt(u64, buf[3..11], .big);
+        self.limbs[3] = (@as(u64, buf[0]) << 16) | mem.readInt(u16, buf[1..3], .big);
+    }
+
+    fn setBytes28(self: *U256, buf: []const u8) void {
+        assert(buf.len == 28);
+        self.limbs[0] = mem.readInt(u64, buf[20..28], .big);
+        self.limbs[1] = mem.readInt(u64, buf[12..20], .big);
+        self.limbs[2] = mem.readInt(u64, buf[4..12], .big);
+        self.limbs[3] = mem.readInt(u32, buf[0..4], .big);
+    }
+
+    fn setBytes29(self: *U256, buf: []const u8) void {
+        assert(buf.len == 29);
+        self.limbs[0] = mem.readInt(u64, buf[21..29], .big);
+        self.limbs[1] = mem.readInt(u64, buf[13..21], .big);
+        self.limbs[2] = mem.readInt(u64, buf[5..13], .big);
+        self.limbs[3] = (@as(u64, buf[0]) << 32) | mem.readInt(u32, buf[1..5], .big);
+    }
+
+    fn setBytes30(self: *U256, buf: []const u8) void {
+        assert(buf.len == 30);
+        self.limbs[0] = mem.readInt(u64, buf[22..30], .big);
+        self.limbs[1] = mem.readInt(u64, buf[14..22], .big);
+        self.limbs[2] = mem.readInt(u64, buf[6..14], .big);
+        self.limbs[3] = (@as(u64, mem.readInt(u16, buf[0..2], .big)) << 32) |
+            mem.readInt(u32, buf[2..6], .big);
+    }
+
+    fn setBytes31(self: *U256, buf: []const u8) void {
+        assert(buf.len == 31);
+        self.limbs[0] = mem.readInt(u64, buf[23..31], .big);
+        self.limbs[1] = mem.readInt(u64, buf[15..23], .big);
+        self.limbs[2] = mem.readInt(u64, buf[7..15], .big);
+        self.limbs[3] = (@as(u64, buf[0]) << 48) |
+            (@as(u64, mem.readInt(u16, buf[1..3], .big)) << 32) |
+            mem.readInt(u32, buf[3..7], .big);
+    }
+
+    fn setBytes32(self: *U256, buf: []const u8) void {
+        assert(buf.len == 32);
+        self.limbs[0] = mem.readInt(u64, buf[24..32], .big);
+        self.limbs[1] = mem.readInt(u64, buf[16..24], .big);
+        self.limbs[2] = mem.readInt(u64, buf[8..16], .big);
+        self.limbs[3] = mem.readInt(u64, buf[0..8], .big);
+    }
+
     /// Sets self to the value of the byte at position n in self,
     /// treating self as a big-endian 32-byte integer.
     /// If n >= 32, self is set to 0.
@@ -158,49 +748,78 @@ pub const U256 = struct {
         return self;
     }
 
-    /// Sets self to the value of a u64 and returns self.
-    pub fn setU64(self: *U256, val: u64) *U256 {
-        self.limbs[0] = val;
-        self.limbs[1] = 0;
-        self.limbs[2] = 0;
-        self.limbs[3] = 0;
-        return self;
+    /// Compares self with other and returns:
+    /// -1 if self < other
+    ///  0 if self == other
+    /// +1 if self > other
+    pub fn cmp(self: U256, other: U256) i8 {
+        // Compare by doing subtraction and checking for borrow
+        const d0, const carry0 = @subWithOverflow(self.limbs[0], other.limbs[0]);
+        const d1, const carry1 = @subWithOverflow(self.limbs[1], other.limbs[1]);
+        const d2, const carry2 = @subWithOverflow(self.limbs[2], other.limbs[2]);
+        const d3, const carry3 = @subWithOverflow(self.limbs[3], other.limbs[3]);
+
+        // Propagate carries
+        const d1_with_carry, const carry1_prop = @subWithOverflow(d1, carry0);
+        const d2_with_carry, const carry2_prop = @subWithOverflow(d2, carry1 + carry1_prop);
+        const d3_with_carry, const carry3_prop = @subWithOverflow(d3, carry2 + carry2_prop);
+        const final_carry = carry3 + carry3_prop;
+
+        // If there's a final borrow, self < other
+        if (final_carry != 0) {
+            return -1;
+        }
+
+        // If all difference limbs are zero, self == other
+        if ((d0 | d1_with_carry | d2_with_carry | d3_with_carry) == 0) {
+            return 0;
+        }
+
+        // Otherwise self > other
+        return 1;
     }
 
-    /// Sets self to 1 and returns self.
-    pub fn setOne(self: *U256) *U256 {
-        self.limbs[0] = 1;
-        self.limbs[1] = 0;
-        self.limbs[2] = 0;
-        self.limbs[3] = 0;
-        return self;
+    /// Compares self with a u64 value and returns:
+    /// -1 if self < x
+    ///  0 if self == x
+    /// +1 if self > x
+    pub fn cmpU64(self: U256, x: u64) i8 {
+        // If any upper limb is non-zero, self > x
+        if ((self.limbs[1] | self.limbs[2] | self.limbs[3]) != 0) {
+            return 1;
+        }
+
+        // Compare lower limb
+        if (self.limbs[0] > x) {
+            return 1;
+        }
+        if (self.limbs[0] == x) {
+            return 0;
+        }
+        return -1;
     }
 
-    /// Sets all bits of self to 1 (sets to maximum U256 value) and returns self.
-    /// Result is 2^256 - 1 = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
-    pub fn setAllOne(self: *U256) *U256 {
-        self.limbs[0] = 0xFFFFFFFFFFFFFFFF;
-        self.limbs[1] = 0xFFFFFFFFFFFFFFFF;
-        self.limbs[2] = 0xFFFFFFFFFFFFFFFF;
-        self.limbs[3] = 0xFFFFFFFFFFFFFFFF;
-        return self;
-    }
+    /// Compares self with a big integer and returns:
+    /// -1 if self < x
+    ///  0 if self == x
+    /// +1 if self > x
+    pub fn cmpBig(self: U256, x: std.math.big.int.Const) i8 {
+        // If x is negative, self (which is unsigned) is always greater
+        if (!x.positive) {
+            return 1;
+        }
 
-    /// Clears self (sets to zero) and returns self.
-    pub fn clear(self: *U256) *U256 {
-        self.limbs = [_]u64{0} ** 4;
-        return self;
-    }
+        // Convert x to U256
+        var y = U256.initZero();
+        const overflow = y.setFromBig(x);
 
-    /// Sets self to x and returns self.
-    pub fn set(self: *U256, x: U256) *U256 {
-        self.limbs = x.limbs;
-        return self;
-    }
+        // If x overflows 256 bits, then x > self
+        if (overflow) {
+            return -1;
+        }
 
-    /// Returns true if self is zero.
-    pub fn isZero(self: U256) bool {
-        return (self.limbs[0] | self.limbs[1] | self.limbs[2] | self.limbs[3]) == 0;
+        // Both fit in 256 bits, do normal comparison
+        return self.cmp(y);
     }
 
     /// Returns the sign of self interpreted as a two's complement signed number.
@@ -280,495 +899,24 @@ pub const U256 = struct {
         return self;
     }
 
-    /// Sets self to -x mod 2^256 and returns self.
-    pub fn neg(self: *U256, x: U256) *U256 {
-        return self.sub(U256.initZero(), x);
-    }
-
-    /// Interprets x as a two's complement signed number and sets self to the absolute value.
-    /// Examples:
-    ///   Abs(0)        = 0
-    ///   Abs(1)        = 1
-    ///   Abs(2^255)    = -2^255 (stays the same, most negative value)
-    ///   Abs(2^256-1)  = 1 (interpreted as -1)
-    pub fn abs(self: *U256, x: U256) *U256 {
-        if (x.limbs[3] < 0x8000000000000000) {
-            return self.set(x);
-        }
-        return self.sub(U256.initZero(), x);
-    }
-
-    /// Converts a big integer to U256 and sets the value to self.
-    /// Returns true if the value overflows (doesn't fit in 256 bits).
-    /// Handles both positive and negative big integers (negative values are converted using two's complement).
-    pub fn setFromBig(self: *U256, big: std.math.big.int.Const) bool {
-        _ = self.clear();
-
-        const limbs = big.limbs;
-        const positive = big.positive;
-
-        // On 64-bit systems, big.Int limbs are u64 (same as our limbs)
-        // On 32-bit systems, big.Int limbs are u32 (need to combine pairs)
-        const limb_bits = @bitSizeOf(std.math.big.Limb);
-
-        var overflow = false;
-
-        if (limb_bits == 64) {
-            // 64-bit architecture: direct copy
-            const max_limbs = @min(limbs.len, 4);
-            for (0..max_limbs) |i| {
-                self.limbs[i] = limbs[i];
-            }
-            overflow = limbs.len > 4;
-        } else if (limb_bits == 32) {
-            // 32-bit architecture: combine pairs of u32 into u64
-            const max_limbs = @min(limbs.len, 8);
-            overflow = limbs.len > 8;
-
-            var i: usize = 0;
-            while (i < max_limbs) : (i += 1) {
-                const limb_idx = i / 2;
-                if (i % 2 == 0) {
-                    self.limbs[limb_idx] = limbs[i];
-                } else {
-                    self.limbs[limb_idx] |= @as(u64, limbs[i]) << 32;
-                }
-            }
-        } else {
-            @compileError("Unsupported limb size for big integers");
-        }
-
-        // Handle negative numbers using two's complement
-        if (!positive) {
-            _ = self.neg(self.*);
-        }
-
-        return overflow;
-    }
-
-    /// Convenience constructor from big.Int.
-    /// Returns a new U256 and whether overflow occurred.
-    ///
-    /// Example:
-    /// ```zig
-    /// var big = try std.math.big.int.Managed.init(allocator);
-    /// try big.set(12345);
-    /// const result = U256.fromBig(big.toConst());
-    /// if (result.overflow) {
-    ///     // Handle overflow
-    /// }
-    /// ```
-    pub fn fromBig(big: std.math.big.int.Const) struct { value: U256, overflow: bool } {
-        var z = U256.initZero();
-        const overflow = z.setFromBig(big);
-        return .{ .value = z, .overflow = overflow };
-    }
-
-    /// Convenience constructor from big.Int that panics on overflow.
-    /// Returns a new U256.
-    ///
-    /// Example:
-    /// ```zig
-    /// var big = try std.math.big.int.Managed.init(allocator);
-    /// try big.set(12345);
-    /// const z = U256.mustFromBig(big.toConst());
-    /// ```
-    pub fn mustFromBig(big: std.math.big.int.Const) U256 {
-        var z = U256.initZero();
-        const overflow = z.setFromBig(big);
-        if (overflow) {
-            std.debug.panic("U256.mustFromBig: overflow occurred", .{});
-        }
-        return z;
-    }
-
-    /// Returns the float64 value nearest to self.
-    ///
-    /// Note: The `std.math.big.Float` version would also return an 'Accuracy',
-    /// indicating whether the value was too small or too large to be represented
-    /// by a float64. However, U256 is unable to represent values out of scope
-    /// (|x| < std.math.floatMin(f64) or |x| > std.math.floatMax(f64)),
-    /// therefore this method does not return any accuracy.
-    ///
-    /// The conversion follows IEEE 754 double-precision format:
-    /// - 1 sign bit (always 0 for unsigned)
-    /// - 11 exponent bits
-    /// - 52 fraction bits
-    ///
-    /// Example:
-    /// ```zig
-    /// const z = U256.init(12345);
-    /// const f = z.toFloat64();
-    /// ```
-    pub fn toFloat64(self: U256) f64 {
-        // Fast path for values that fit in u64
-        if (self.isU64()) {
-            return @floatFromInt(self.getU64());
-        }
-
-        // Get the bit length of the number
-        const bitlen = self.bitLen();
-
-        // Normalize the number by shifting it so that the MSB is shifted out
-        // After normalization, the leading 1 bit is implicit in IEEE 754
-        var y = U256.initZero();
-        const shift_amount: u32 = @intCast(1 + 256 - bitlen);
-        _ = y.lsh(self, shift_amount);
-
-        // The number with the leading 1 shifted out is the fraction
-        // We take the top 52 bits from limbs[3]
-        const fraction = y.limbs[3];
-
-        // The exponent is calculated from the bit length, adjusted with the bias
-        // Double-precision uses 1023 as bias
-        const biased_exp: u64 = 1023 + bitlen - 1;
-
-        // Construct the IEEE 754 double-precision representation:
-        // [sign: 1 bit (0)] [exponent: 11 bits] [fraction: 52 bits]
-        // We shift exponent left by 52 bits and take top 52 bits of fraction
-        const bits = (biased_exp << 52) | (fraction >> 12);
-
-        return @bitCast(bits);
-    }
-
-    /// Interprets n and d as two's complement signed integers,
-    /// performs signed division, and sets self to the result.
-    /// If d == 0, self is set to 0.
-    pub fn sDiv(self: *U256, n: U256, d: U256) *U256 {
-        const n_sign = n.sign();
-        const d_sign = d.sign();
-
-        if (n_sign > 0) {
-            if (d_sign > 0) {
-                // pos / pos
-                return self.div(n, d);
-            } else {
-                // pos / neg
-                var abs_d = U256.initZero();
-                _ = abs_d.neg(d);
-                _ = self.div(n, abs_d);
-                return self.neg(self.*);
-            }
-        }
-
-        if (d_sign < 0) {
-            // neg / neg
-            var abs_n = U256.initZero();
-            var abs_d = U256.initZero();
-            _ = abs_n.neg(n);
-            _ = abs_d.neg(d);
-            return self.div(abs_n, abs_d);
-        }
-
-        // neg / pos
-        var abs_n = U256.initZero();
-        _ = abs_n.neg(n);
-        _ = self.div(abs_n, d);
-        return self.neg(self.*);
-    }
-
-    /// Interprets self and d as two's complement signed integers,
-    /// performs signed division self / d, modifying self in place.
-    /// Returns self = self / d (signed).
-    pub fn iSDiv(self: *U256, d: U256) *U256 {
-        const self_copy = self.*;
-        return self.sDiv(self_copy, d);
-    }
-
-    /// Returns true if self equals other.
-    pub fn eq(self: U256, other: U256) bool {
-        return self.limbs[0] == other.limbs[0] and
-            self.limbs[1] == other.limbs[1] and
-            self.limbs[2] == other.limbs[2] and
-            self.limbs[3] == other.limbs[3];
-    }
-
-    /// Returns true if self is less than other.
-    pub fn lt(self: U256, other: U256) bool {
-        if (self.limbs[3] != other.limbs[3]) return self.limbs[3] < other.limbs[3];
-        if (self.limbs[2] != other.limbs[2]) return self.limbs[2] < other.limbs[2];
-        if (self.limbs[1] != other.limbs[1]) return self.limbs[1] < other.limbs[1];
-        return self.limbs[0] < other.limbs[0];
-    }
-
-    /// Returns true if self is less than or equal to other.
-    pub fn lte(self: U256, other: U256) bool {
-        return self.lt(other) or self.eq(other);
-    }
-
-    /// Returns true if self is greater than other.
-    pub fn gt(self: U256, other: U256) bool {
-        return other.lt(self);
-    }
-
-    /// Returns true if self is greater than or equal to other.
-    pub fn gte(self: U256, other: U256) bool {
-        return other.lt(self) or self.eq(other);
-    }
-
-    /// Returns true if self < other when both are interpreted as signed integers.
-    /// Uses two's complement representation where MSB indicates sign.
-    pub fn slt(self: U256, other: U256) bool {
-        const self_sign = self.sign();
-        const other_sign = other.sign();
-
-        // Different signs: negative < positive
-        if (self_sign >= 0 and other_sign < 0) {
-            return false;
-        }
-        if (self_sign < 0 and other_sign >= 0) {
-            return true;
-        }
-
-        // Same sign: compare as unsigned
-        return self.lt(other);
-    }
-
-    /// Returns true if self > other when both are interpreted as signed integers.
-    /// Uses two's complement representation where MSB indicates sign.
-    pub fn sgt(self: U256, other: U256) bool {
-        const self_sign = self.sign();
-        const other_sign = other.sign();
-
-        // Different signs: positive > negative
-        if (self_sign >= 0 and other_sign < 0) {
-            return true;
-        }
-        if (self_sign < 0 and other_sign >= 0) {
-            return false;
-        }
-
-        // Same sign: compare as unsigned
-        return self.gt(other);
-    }
-
-    /// Compares self with other and returns:
-    /// -1 if self < other
-    ///  0 if self == other
-    /// +1 if self > other
-    pub fn cmp(self: U256, other: U256) i8 {
-        // Compare by doing subtraction and checking for borrow
-        const d0, const carry0 = @subWithOverflow(self.limbs[0], other.limbs[0]);
-        const d1, const carry1 = @subWithOverflow(self.limbs[1], other.limbs[1]);
-        const d2, const carry2 = @subWithOverflow(self.limbs[2], other.limbs[2]);
-        const d3, const carry3 = @subWithOverflow(self.limbs[3], other.limbs[3]);
-
-        // Propagate carries
-        const d1_with_carry, const carry1_prop = @subWithOverflow(d1, carry0);
-        const d2_with_carry, const carry2_prop = @subWithOverflow(d2, carry1 + carry1_prop);
-        const d3_with_carry, const carry3_prop = @subWithOverflow(d3, carry2 + carry2_prop);
-        const final_carry = carry3 + carry3_prop;
-
-        // If there's a final borrow, self < other
-        if (final_carry != 0) {
-            return -1;
-        }
-
-        // If all difference limbs are zero, self == other
-        if ((d0 | d1_with_carry | d2_with_carry | d3_with_carry) == 0) {
-            return 0;
-        }
-
-        // Otherwise self > other
-        return 1;
-    }
-
-    /// Compares self with a u64 value and returns:
-    /// -1 if self < x
-    ///  0 if self == x
-    /// +1 if self > x
-    pub fn cmpU64(self: U256, x: u64) i8 {
-        // If any upper limb is non-zero, self > x
-        if ((self.limbs[1] | self.limbs[2] | self.limbs[3]) != 0) {
-            return 1;
-        }
-
-        // Compare lower limb
-        if (self.limbs[0] > x) {
-            return 1;
-        }
-        if (self.limbs[0] == x) {
-            return 0;
-        }
-        return -1;
-    }
-
-    /// Returns true if self < n (where n is a u64).
-    pub fn ltU64(self: U256, n: u64) bool {
-        return self.limbs[0] < n and ((self.limbs[1] | self.limbs[2] | self.limbs[3]) == 0);
-    }
-
-    /// Returns true if self > n (where n is a u64).
-    pub fn gtU64(self: U256, n: u64) bool {
-        return self.limbs[0] > n or ((self.limbs[1] | self.limbs[2] | self.limbs[3]) != 0);
-    }
-
-    /// Compares self with a big integer and returns:
-    /// -1 if self < x
-    ///  0 if self == x
-    /// +1 if self > x
-    pub fn cmpBig(self: U256, x: std.math.big.int.Const) i8 {
-        // If x is negative, self (which is unsigned) is always greater
-        if (!x.positive) {
-            return 1;
-        }
-
-        // Convert x to U256
-        var y = U256.initZero();
-        const overflow = y.setFromBig(x);
-
-        // If x overflows 256 bits, then x > self
-        if (overflow) {
-            return -1;
-        }
-
-        // Both fit in 256 bits, do normal comparison
-        return self.cmp(y);
-    }
-
-    /// Returns true if self can fit in a u64 (all upper limbs are zero).
-    pub fn isU64(self: U256) bool {
-        return (self.limbs[1] | self.limbs[2] | self.limbs[3]) == 0;
-    }
-
-    /// Interprets buf as the bytes of a big-endian unsigned integer,
-    /// sets self to that value, and returns self.
-    /// If buf is larger than 32 bytes, only the last 32 bytes are used.
-    pub fn setBytes(self: *U256, buf: []const u8) *U256 {
-        if (buf.len == 0) {
-            return self.clear();
-        }
-
-        // If larger than 32 bytes, use only the last 32 bytes
-        const effective_buf = if (buf.len > 32) buf[buf.len - 32 ..] else buf;
-        const effective_len = @min(buf.len, 32);
-
-        switch (effective_len) {
-            1 => self.setBytes1(effective_buf),
-            2 => self.setBytes2(effective_buf),
-            3 => self.setBytes3(effective_buf),
-            4 => self.setBytes4(effective_buf),
-            5 => self.setBytes5(effective_buf),
-            6 => self.setBytes6(effective_buf),
-            7 => self.setBytes7(effective_buf),
-            8 => self.setBytes8(effective_buf),
-            9 => self.setBytes9(effective_buf),
-            10 => self.setBytes10(effective_buf),
-            11 => self.setBytes11(effective_buf),
-            12 => self.setBytes12(effective_buf),
-            13 => self.setBytes13(effective_buf),
-            14 => self.setBytes14(effective_buf),
-            15 => self.setBytes15(effective_buf),
-            16 => self.setBytes16(effective_buf),
-            17 => self.setBytes17(effective_buf),
-            18 => self.setBytes18(effective_buf),
-            19 => self.setBytes19(effective_buf),
-            20 => self.setBytes20(effective_buf),
-            21 => self.setBytes21(effective_buf),
-            22 => self.setBytes22(effective_buf),
-            23 => self.setBytes23(effective_buf),
-            24 => self.setBytes24(effective_buf),
-            25 => self.setBytes25(effective_buf),
-            26 => self.setBytes26(effective_buf),
-            27 => self.setBytes27(effective_buf),
-            28 => self.setBytes28(effective_buf),
-            29 => self.setBytes29(effective_buf),
-            30 => self.setBytes30(effective_buf),
-            31 => self.setBytes31(effective_buf),
-            32 => self.setBytes32(effective_buf),
-            else => unreachable,
-        }
-
-        return self;
-    }
-
-    /// bytes32 returns the value of self as a 32-byte big-endian array.
-    pub fn bytes32(self: U256) [32]u8 {
-        var b: [32]u8 = undefined;
-
-        mem.writeInt(u64, b[0..8], self.limbs[3], .big);
-        mem.writeInt(u64, b[8..16], self.limbs[2], .big);
-        mem.writeInt(u64, b[16..24], self.limbs[1], .big);
-        mem.writeInt(u64, b[24..32], self.limbs[0], .big);
-
-        return b;
-    }
-
-    /// bytes20 returns the value of self as a 20-byte big-endian array.
-    pub fn bytes20(self: U256) [20]u8 {
-        var b: [20]u8 = undefined;
-
-        mem.writeInt(u32, b[0..4], @truncate(self.limbs[2]), .big);
-        mem.writeInt(u64, b[4..12], self.limbs[1], .big);
-        mem.writeInt(u64, b[12..20], self.limbs[0], .big);
-
-        return b;
-    }
-
-    /// Returns the number of bits required to represent self.
-    pub fn bitLen(self: U256) usize {
-        if (self.limbs[3] != 0) {
-            return @as(usize, 192) + @as(usize, 64 - @clz(self.limbs[3]));
-        }
-        if (self.limbs[2] != 0) {
-            return @as(usize, 128) + @as(usize, 64 - @clz(self.limbs[2]));
-        }
-        if (self.limbs[1] != 0) {
-            return @as(usize, 64) + @as(usize, 64 - @clz(self.limbs[1]));
-        }
-        if (self.limbs[0] == 0) {
-            return 0;
-        }
-        return @as(usize, 64 - @clz(self.limbs[0]));
-    }
-
-    /// Returns the number of bytes required to represent self.
-    pub fn byteLen(self: U256) usize {
-        return (self.bitLen() + 7) / 8;
-    }
-
-    /// Writes the minimal big-endian representation to the start of buf.
-    /// Returns the number of bytes written.
-    /// Returns 0 if buf is smaller than the minimal byte length.
-    pub fn writeBytes(self: U256, buf: []u8) usize {
-        const len = self.byteLen();
-        if (buf.len < len) return 0;
-
-        const full = self.bytes32();
-        @memcpy(buf[0..len], full[32 - len ..]);
-        return len;
-    }
-
-    /// Writes bytes to the end of buf (right-padded with the value at the end).
-    /// If buf is larger than 32 bytes, fills the first 32 bytes.
-    /// If buf is smaller than 32 bytes, only writes the least significant bytes.
-    /// Useful for filling fixed-size buffers like Ethereum addresses (20 bytes).
-    pub fn writeBytesToEnd(self: U256, buf: []u8) void {
-        if (buf.len == 0) return;
-
-        const full = self.bytes32();
-        const end: usize = @min(buf.len - 1, 31);
+    /// Writes self to buffer with 0-padding to n bytes (big-endian).
+    /// Buffer must be at least n bytes long.
+    /// Returns a slice of the buffer containing the result.
+    /// Example: z = 1, n = 20 => [0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1]
+    pub fn paddedBytes(self: U256, buffer: []u8, n: usize) ![]u8 {
+        if (buffer.len < n) return error.BufferTooSmall;
+
+        const b = buffer[0..n];
+        @memset(b, 0);
 
         var i: usize = 0;
-        while (i <= end) : (i += 1) {
-            buf[end - i] = full[31 - i];
+        while (i < 32 and i < n) : (i += 1) {
+            const limb_index = i / 8;
+            const byte_offset = @as(u6, @intCast(8 * (i % 8)));
+            b[n - 1 - i] = @as(u8, @truncate(self.limbs[limb_index] >> byte_offset));
         }
-    }
 
-    /// Returns the lower 64 bits of self.
-    pub fn lowerU64(self: U256) u64 {
-        return self.limbs[0];
-    }
-
-    /// Returns whether the value overflows 64 bits.
-    /// If this returns false, the value can safely fit in a u64.
-    pub fn overflowsU64(self: U256) bool {
-        return (self.limbs[1] | self.limbs[2] | self.limbs[3]) != 0;
-    }
-
-    /// Creates a new U256 identical to self.
-    pub fn clone(self: U256) U256 {
-        return self;
+        return b;
     }
 
     /// Sets self to the sum x + y and returns self.
@@ -831,6 +979,35 @@ pub const U256 = struct {
         return final_carry != 0;
     }
 
+    /// Sets self to x + y, where y is a u64, and returns self.
+    pub fn addU64(self: *U256, x: U256, y: u64) *U256 {
+        var carry: u1 = 0;
+
+        const r0 = @addWithOverflow(x.limbs[0], y);
+        self.limbs[0] = r0[0];
+        carry = r0[1];
+
+        const r1 = @addWithOverflow(x.limbs[1], @as(u64, carry));
+        self.limbs[1] = r1[0];
+        carry = r1[1];
+
+        const r2 = @addWithOverflow(x.limbs[2], @as(u64, carry));
+        self.limbs[2] = r2[0];
+        carry = r2[1];
+
+        const r3 = @addWithOverflow(x.limbs[3], @as(u64, carry));
+        self.limbs[3] = r3[0];
+
+        return self;
+    }
+
+    /// Adds u64 x to self, modifying self in place, and returns self.
+    /// Mathematically: self = self + x.
+    pub fn iaddU64(self: *U256, x: u64) *U256 {
+        const self_copy = self.*;
+        return self.addU64(self_copy, x);
+    }
+
     /// Sets self to the difference x - y and returns self.
     /// Performs 256-bit subtraction with borrow propagation, wrapping on underflow.
     pub fn sub(self: *U256, x: U256, y: U256) *U256 {
@@ -855,6 +1032,13 @@ pub const U256 = struct {
         self.limbs[3] = r3b[0];
 
         return self;
+    }
+
+    /// Subtracts x from self, modifying self in place, and returns self.
+    /// Mathematically: self = self - x.
+    pub fn isub(self: *U256, x: U256) *U256 {
+        const self_copy = self.*;
+        return self.sub(self_copy, x);
     }
 
     /// Sets self to the difference x - y and returns whether underflow occurred.
@@ -884,11 +1068,179 @@ pub const U256 = struct {
         return final_borrow != 0;
     }
 
-    /// Subtracts x from self, modifying self in place, and returns self.
+    /// Sets self to x - y, where y is a u64, and returns self.
+    pub fn subU64(self: *U256, x: U256, y: u64) *U256 {
+        var borrow: u1 = 0;
+
+        const r0 = @subWithOverflow(x.limbs[0], y);
+        self.limbs[0] = r0[0];
+        borrow = r0[1];
+
+        const r1 = @subWithOverflow(x.limbs[1], @as(u64, borrow));
+        self.limbs[1] = r1[0];
+        borrow = r1[1];
+
+        const r2 = @subWithOverflow(x.limbs[2], @as(u64, borrow));
+        self.limbs[2] = r2[0];
+        borrow = r2[1];
+
+        const r3 = @subWithOverflow(x.limbs[3], @as(u64, borrow));
+        self.limbs[3] = r3[0];
+
+        return self;
+    }
+
+    /// Subtracts u64 x from self, modifying self in place, and returns self.
     /// Mathematically: self = self - x.
-    pub fn isub(self: *U256, x: U256) *U256 {
+    pub fn isubU64(self: *U256, x: u64) *U256 {
         const self_copy = self.*;
-        return self.sub(self_copy, x);
+        return self.subU64(self_copy, x);
+    }
+
+    /// Sets self to the product x * y and returns self.
+    pub fn mul(self: *U256, x: U256, y: U256) *U256 {
+        var carry0: u64 = 0;
+        var carry1: u64 = 0;
+        var carry2: u64 = 0;
+        var res1: u64 = 0;
+        var res2: u64 = 0;
+
+        const x0 = x.limbs[0];
+        const x1 = x.limbs[1];
+        const x2 = x.limbs[2];
+        const x3 = x.limbs[3];
+        const y0 = y.limbs[0];
+        const y1 = y.limbs[1];
+        const y2 = y.limbs[2];
+        const y3 = y.limbs[3];
+
+        // First row
+        const p0 = @as(u128, x0) * @as(u128, y0);
+        carry0 = @as(u64, @truncate(p0 >> 64));
+        self.limbs[0] = @as(u64, @truncate(p0));
+
+        const r1 = multiplication.umulHop(carry0, x1, y0);
+        carry0 = r1.hi;
+        res1 = r1.lo;
+
+        const r2 = multiplication.umulHop(carry0, x2, y0);
+        carry0 = r2.hi;
+        res2 = r2.lo;
+
+        // Second row
+        const r3 = multiplication.umulHop(res1, x0, y1);
+        carry1 = r3.hi;
+        self.limbs[1] = r3.lo;
+
+        const r4 = multiplication.umulStep(res2, x1, y1, carry1);
+        carry1 = r4.hi;
+        res2 = r4.lo;
+
+        // Third row
+        const r5 = multiplication.umulHop(res2, x0, y2);
+        carry2 = r5.hi;
+        self.limbs[2] = r5.lo;
+
+        // Final limb
+        self.limbs[3] = x3 *% y0 +% x2 *% y1 +% x0 *% y3 +% x1 *% y2 +% carry0 +% carry1 +% carry2;
+
+        return self;
+    }
+
+    /// Multiplies self by x, modifying self in place, and returns self.
+    /// Mathematically: self = self * x.
+    pub fn imul(self: *U256, x: U256) *U256 {
+        const self_copy = self.*;
+        return self.mul(self_copy, x);
+    }
+
+    /// Sets self to the product x * y and returns whether overflow occurred.
+    /// Returns true if the multiplication overflowed (result > 2^256 - 1).
+    pub fn mulOverflow(self: *U256, x: U256, y: U256) bool {
+        var p: [8]u64 = undefined;
+        multiplication.umul(&x.limbs, &y.limbs, &p);
+
+        // Copy lower 4 limbs to self
+        self.limbs[0] = p[0];
+        self.limbs[1] = p[1];
+        self.limbs[2] = p[2];
+        self.limbs[3] = p[3];
+
+        // Check if any of the upper 4 limbs are non-zero
+        return (p[4] | p[5] | p[6] | p[7]) != 0;
+    }
+
+    /// Sets self to the quotient x / y and returns self.
+    /// If y == 0, self is set to 0.
+    pub fn div(self: *U256, x: U256, y: U256) *U256 {
+        if (y.isZero() or y.gt(x)) {
+            return self.clear();
+        }
+        if (x.eq(y)) {
+            return self.setOne();
+        }
+
+        // Shortcut for small values
+        if (x.isU64()) {
+            return self.setU64(x.getU64() / y.getU64());
+        }
+
+        // At this point: x / y where x > y > 0
+        var quot: [4]u64 = [_]u64{0} ** 4;
+        division.udivrem(&quot, &x.limbs, &y, null);
+        self.limbs = quot;
+        return self;
+    }
+
+    /// Divides self by x, modifying self in place, and returns self.
+    /// Mathematically: self = self / x.
+    pub fn idiv(self: *U256, x: U256) *U256 {
+        const self_copy = self.*;
+        return self.div(self_copy, x);
+    }
+
+    /// Interprets n and d as two's complement signed integers,
+    /// performs signed division, and sets self to the result.
+    /// If d == 0, self is set to 0.
+    pub fn sDiv(self: *U256, n: U256, d: U256) *U256 {
+        const n_sign = n.sign();
+        const d_sign = d.sign();
+
+        if (n_sign > 0) {
+            if (d_sign > 0) {
+                // pos / pos
+                return self.div(n, d);
+            } else {
+                // pos / neg
+                var abs_d = U256.initZero();
+                _ = abs_d.neg(d);
+                _ = self.div(n, abs_d);
+                return self.neg(self.*);
+            }
+        }
+
+        if (d_sign < 0) {
+            // neg / neg
+            var abs_n = U256.initZero();
+            var abs_d = U256.initZero();
+            _ = abs_n.neg(n);
+            _ = abs_d.neg(d);
+            return self.div(abs_n, abs_d);
+        }
+
+        // neg / pos
+        var abs_n = U256.initZero();
+        _ = abs_n.neg(n);
+        _ = self.div(abs_n, d);
+        return self.neg(self.*);
+    }
+
+    /// Interprets self and d as two's complement signed integers,
+    /// performs signed division self / d, modifying self in place.
+    /// Returns self = self / d (signed).
+    pub fn iSDiv(self: *U256, d: U256) *U256 {
+        const self_copy = self.*;
+        return self.sDiv(self_copy, d);
     }
 
     /// Sets self to the modulus x % y and returns self.
@@ -960,6 +1312,138 @@ pub const U256 = struct {
     pub fn isMod(self: *U256, x: U256) *U256 {
         const self_copy = self.*;
         return self.sMod(self_copy, x);
+    }
+
+    /// Sets self to (x + y) mod m and returns self.
+    /// If m == 0, self is set to 0 (differs from big.Int behavior).
+    pub fn addMod(self: *U256, x: U256, y: U256, m: U256) *U256 {
+        // Fast path for m >= 2^192, with x and y at most slightly bigger than m.
+        // This is always the case when x and y are already reduced modulo such m.
+        if (m.limbs[3] != 0 and x.limbs[3] <= m.limbs[3] and y.limbs[3] <= m.limbs[3]) {
+            var gte_c1: u1 = 0;
+            var gte_c2: u1 = 0;
+            var tmp_x = U256.initZero();
+            var tmp_y = U256.initZero();
+            var res = U256.initZero();
+
+            // Reduce x modulo m if x >= m
+            const x0 = @subWithOverflow(x.limbs[0], m.limbs[0]);
+            tmp_x.limbs[0] = x0[0];
+            gte_c1 = x0[1];
+
+            const x1 = @subWithOverflow(x.limbs[1], m.limbs[1]);
+            const x1b = @subWithOverflow(x1[0], gte_c1);
+            tmp_x.limbs[1] = x1b[0];
+            gte_c1 = x1[1] | x1b[1];
+
+            const x2 = @subWithOverflow(x.limbs[2], m.limbs[2]);
+            const x2b = @subWithOverflow(x2[0], gte_c1);
+            tmp_x.limbs[2] = x2b[0];
+            gte_c1 = x2[1] | x2b[1];
+
+            const x3 = @subWithOverflow(x.limbs[3], m.limbs[3]);
+            const x3b = @subWithOverflow(x3[0], gte_c1);
+            tmp_x.limbs[3] = x3b[0];
+            gte_c1 = x3[1] | x3b[1];
+
+            // Reduce y modulo m if y >= m
+            const y0 = @subWithOverflow(y.limbs[0], m.limbs[0]);
+            tmp_y.limbs[0] = y0[0];
+            gte_c2 = y0[1];
+
+            const y1 = @subWithOverflow(y.limbs[1], m.limbs[1]);
+            const y1b = @subWithOverflow(y1[0], gte_c2);
+            tmp_y.limbs[1] = y1b[0];
+            gte_c2 = y1[1] | y1b[1];
+
+            const y2 = @subWithOverflow(y.limbs[2], m.limbs[2]);
+            const y2b = @subWithOverflow(y2[0], gte_c2);
+            tmp_y.limbs[2] = y2b[0];
+            gte_c2 = y2[1] | y2b[1];
+
+            const y3 = @subWithOverflow(y.limbs[3], m.limbs[3]);
+            const y3b = @subWithOverflow(y3[0], gte_c2);
+            tmp_y.limbs[3] = y3b[0];
+            gte_c2 = y3[1] | y3b[1];
+
+            // Use reduced values if subtraction didn't underflow
+            const x_final = if (gte_c1 == 0) tmp_x else x;
+            const y_final = if (gte_c2 == 0) tmp_y else y;
+
+            // Add x_final + y_final
+            var c1: u1 = 0;
+            const r0 = @addWithOverflow(x_final.limbs[0], y_final.limbs[0]);
+            res.limbs[0] = r0[0];
+            c1 = r0[1];
+
+            const r1 = @addWithOverflow(x_final.limbs[1], y_final.limbs[1]);
+            const r1c = @addWithOverflow(r1[0], c1);
+            res.limbs[1] = r1c[0];
+            c1 = r1[1] | r1c[1];
+
+            const r2 = @addWithOverflow(x_final.limbs[2], y_final.limbs[2]);
+            const r2c = @addWithOverflow(r2[0], c1);
+            res.limbs[2] = r2c[0];
+            c1 = r2[1] | r2c[1];
+
+            const r3 = @addWithOverflow(x_final.limbs[3], y_final.limbs[3]);
+            const r3c = @addWithOverflow(r3[0], c1);
+            res.limbs[3] = r3c[0];
+            c1 = r3[1] | r3c[1];
+
+            // Subtract m from result
+            var tmp = U256.initZero();
+            var c2: u1 = 0;
+            const s0 = @subWithOverflow(res.limbs[0], m.limbs[0]);
+            tmp.limbs[0] = s0[0];
+            c2 = s0[1];
+
+            const s1 = @subWithOverflow(res.limbs[1], m.limbs[1]);
+            const s1b = @subWithOverflow(s1[0], c2);
+            tmp.limbs[1] = s1b[0];
+            c2 = s1[1] | s1b[1];
+
+            const s2 = @subWithOverflow(res.limbs[2], m.limbs[2]);
+            const s2b = @subWithOverflow(s2[0], c2);
+            tmp.limbs[2] = s2b[0];
+            c2 = s2[1] | s2b[1];
+
+            const s3 = @subWithOverflow(res.limbs[3], m.limbs[3]);
+            const s3b = @subWithOverflow(s3[0], c2);
+            tmp.limbs[3] = s3b[0];
+            c2 = s3[1] | s3b[1];
+
+            // If no carry from addition and subtraction underflowed, use res
+            // Otherwise use tmp (subtraction result)
+            if (c1 == 0 and c2 != 0) {
+                return self.set(res);
+            }
+            return self.set(tmp);
+        }
+
+        // General case
+        if (m.isZero()) {
+            return self.clear();
+        }
+
+        const overflow = self.addOverflow(x, y);
+        if (overflow) {
+            // Sum overflowed 256 bits, need 5-limb division
+            const sum: [5]u64 = [_]u64{ self.limbs[0], self.limbs[1], self.limbs[2], self.limbs[3], 1 };
+            var quot: [5]u64 = [_]u64{0} ** 5;
+            var rem = U256.initZero();
+            division.udivrem(&quot, &sum, &m, &rem);
+            return self.set(rem);
+        }
+
+        return self.mod(self.*, m);
+    }
+
+    /// Adds x to self modulo m, modifying self in place, and returns self.
+    /// Mathematically: self = (self + x) mod m.
+    pub fn iaddMod(self: *U256, x: U256, m: U256) *U256 {
+        const self_copy = self.*;
+        return self.addMod(self_copy, x, m);
     }
 
     /// Computes the least non-negative residue of x modulo m using Barrett reduction.
@@ -1578,6 +2062,73 @@ pub const U256 = struct {
         return .{ .z = self, .overflow = overflow };
     }
 
+    /// Sets self to the quotient x / y and m to the modulus x % y, returning both.
+    /// If y == 0, both self and m are set to 0 (differs from big.Int behavior).
+    pub fn divMod(self: *U256, x: U256, y: U256, m: *U256) struct { quot: *U256, rem: *U256 } {
+        const aliased = (self == m);
+
+        if (y.isZero()) {
+            _ = self.clear();
+            _ = m.clear();
+            return .{ .quot = self, .rem = m };
+        }
+        if (x.eq(y)) {
+            if (aliased) {
+                _ = m.clear(); // Set remainder first
+                _ = self.setOne(); // Then quotient
+            } else {
+                _ = self.setOne();
+                _ = m.clear();
+            }
+            return .{ .quot = self, .rem = m };
+        }
+        if (x.lt(y)) {
+            if (aliased) {
+                _ = m.set(x); // Set remainder first
+                _ = self.clear(); // Then quotient (will overwrite, so save remainder)
+                // Need to restore remainder
+                _ = m.set(x);
+            } else {
+                _ = self.clear();
+                _ = m.set(x);
+            }
+            return .{ .quot = self, .rem = m };
+        }
+
+        // Shortcut for small values
+        if (x.isU64() and y.isU64()) {
+            const x0 = x.getU64();
+            const y0 = y.getU64();
+            const quot_val = x0 / y0;
+            const rem_val = x0 % y0;
+            if (aliased) {
+                _ = m.setU64(rem_val); // Set remainder first
+                _ = self.setU64(quot_val); // Then quotient
+                // Restore remainder since self and m are same
+                _ = m.setU64(rem_val);
+            } else {
+                _ = self.setU64(quot_val);
+                _ = m.setU64(rem_val);
+            }
+            return .{ .quot = self, .rem = m };
+        }
+
+        var quot: [4]u64 = [_]u64{0} ** 4;
+        var rem = U256.initZero();
+        division.udivrem(&quot, &x.limbs, &y, &rem);
+
+        if (aliased) {
+            _ = m.set(rem); // Set remainder first
+            _ = self.set(U256{ .limbs = quot }); // Then quotient
+            // Restore remainder since self and m are same
+            _ = m.set(rem);
+        } else {
+            _ = self.set(U256{ .limbs = quot });
+            _ = m.set(rem);
+        }
+        return .{ .quot = self, .rem = m };
+    }
+
     /// Helper: shifts x left by 64 bits and stores in self.
     fn lsh64(self: *U256, x: U256) void {
         self.limbs[3] = x.limbs[2];
@@ -1882,356 +2433,6 @@ pub const U256 = struct {
         return self;
     }
 
-    /// Sets self to the quotient x / y and m to the modulus x % y, returning both.
-    /// If y == 0, both self and m are set to 0 (differs from big.Int behavior).
-    pub fn divMod(self: *U256, x: U256, y: U256, m: *U256) struct { quot: *U256, rem: *U256 } {
-        const aliased = (self == m);
-
-        if (y.isZero()) {
-            _ = self.clear();
-            _ = m.clear();
-            return .{ .quot = self, .rem = m };
-        }
-        if (x.eq(y)) {
-            if (aliased) {
-                _ = m.clear(); // Set remainder first
-                _ = self.setOne(); // Then quotient
-            } else {
-                _ = self.setOne();
-                _ = m.clear();
-            }
-            return .{ .quot = self, .rem = m };
-        }
-        if (x.lt(y)) {
-            if (aliased) {
-                _ = m.set(x); // Set remainder first
-                _ = self.clear(); // Then quotient (will overwrite, so save remainder)
-                // Need to restore remainder
-                _ = m.set(x);
-            } else {
-                _ = self.clear();
-                _ = m.set(x);
-            }
-            return .{ .quot = self, .rem = m };
-        }
-
-        // Shortcut for small values
-        if (x.isU64() and y.isU64()) {
-            const x0 = x.getU64();
-            const y0 = y.getU64();
-            const quot_val = x0 / y0;
-            const rem_val = x0 % y0;
-            if (aliased) {
-                _ = m.setU64(rem_val); // Set remainder first
-                _ = self.setU64(quot_val); // Then quotient
-                // Restore remainder since self and m are same
-                _ = m.setU64(rem_val);
-            } else {
-                _ = self.setU64(quot_val);
-                _ = m.setU64(rem_val);
-            }
-            return .{ .quot = self, .rem = m };
-        }
-
-        var quot: [4]u64 = [_]u64{0} ** 4;
-        var rem = U256.initZero();
-        division.udivrem(&quot, &x.limbs, &y, &rem);
-
-        if (aliased) {
-            _ = m.set(rem); // Set remainder first
-            _ = self.set(U256{ .limbs = quot }); // Then quotient
-            // Restore remainder since self and m are same
-            _ = m.set(rem);
-        } else {
-            _ = self.set(U256{ .limbs = quot });
-            _ = m.set(rem);
-        }
-        return .{ .quot = self, .rem = m };
-    }
-
-    /// Sets self to (x + y) mod m and returns self.
-    /// If m == 0, self is set to 0 (differs from big.Int behavior).
-    pub fn addMod(self: *U256, x: U256, y: U256, m: U256) *U256 {
-        // Fast path for m >= 2^192, with x and y at most slightly bigger than m.
-        // This is always the case when x and y are already reduced modulo such m.
-        if (m.limbs[3] != 0 and x.limbs[3] <= m.limbs[3] and y.limbs[3] <= m.limbs[3]) {
-            var gte_c1: u1 = 0;
-            var gte_c2: u1 = 0;
-            var tmp_x = U256.initZero();
-            var tmp_y = U256.initZero();
-            var res = U256.initZero();
-
-            // Reduce x modulo m if x >= m
-            const x0 = @subWithOverflow(x.limbs[0], m.limbs[0]);
-            tmp_x.limbs[0] = x0[0];
-            gte_c1 = x0[1];
-
-            const x1 = @subWithOverflow(x.limbs[1], m.limbs[1]);
-            const x1b = @subWithOverflow(x1[0], gte_c1);
-            tmp_x.limbs[1] = x1b[0];
-            gte_c1 = x1[1] | x1b[1];
-
-            const x2 = @subWithOverflow(x.limbs[2], m.limbs[2]);
-            const x2b = @subWithOverflow(x2[0], gte_c1);
-            tmp_x.limbs[2] = x2b[0];
-            gte_c1 = x2[1] | x2b[1];
-
-            const x3 = @subWithOverflow(x.limbs[3], m.limbs[3]);
-            const x3b = @subWithOverflow(x3[0], gte_c1);
-            tmp_x.limbs[3] = x3b[0];
-            gte_c1 = x3[1] | x3b[1];
-
-            // Reduce y modulo m if y >= m
-            const y0 = @subWithOverflow(y.limbs[0], m.limbs[0]);
-            tmp_y.limbs[0] = y0[0];
-            gte_c2 = y0[1];
-
-            const y1 = @subWithOverflow(y.limbs[1], m.limbs[1]);
-            const y1b = @subWithOverflow(y1[0], gte_c2);
-            tmp_y.limbs[1] = y1b[0];
-            gte_c2 = y1[1] | y1b[1];
-
-            const y2 = @subWithOverflow(y.limbs[2], m.limbs[2]);
-            const y2b = @subWithOverflow(y2[0], gte_c2);
-            tmp_y.limbs[2] = y2b[0];
-            gte_c2 = y2[1] | y2b[1];
-
-            const y3 = @subWithOverflow(y.limbs[3], m.limbs[3]);
-            const y3b = @subWithOverflow(y3[0], gte_c2);
-            tmp_y.limbs[3] = y3b[0];
-            gte_c2 = y3[1] | y3b[1];
-
-            // Use reduced values if subtraction didn't underflow
-            const x_final = if (gte_c1 == 0) tmp_x else x;
-            const y_final = if (gte_c2 == 0) tmp_y else y;
-
-            // Add x_final + y_final
-            var c1: u1 = 0;
-            const r0 = @addWithOverflow(x_final.limbs[0], y_final.limbs[0]);
-            res.limbs[0] = r0[0];
-            c1 = r0[1];
-
-            const r1 = @addWithOverflow(x_final.limbs[1], y_final.limbs[1]);
-            const r1c = @addWithOverflow(r1[0], c1);
-            res.limbs[1] = r1c[0];
-            c1 = r1[1] | r1c[1];
-
-            const r2 = @addWithOverflow(x_final.limbs[2], y_final.limbs[2]);
-            const r2c = @addWithOverflow(r2[0], c1);
-            res.limbs[2] = r2c[0];
-            c1 = r2[1] | r2c[1];
-
-            const r3 = @addWithOverflow(x_final.limbs[3], y_final.limbs[3]);
-            const r3c = @addWithOverflow(r3[0], c1);
-            res.limbs[3] = r3c[0];
-            c1 = r3[1] | r3c[1];
-
-            // Subtract m from result
-            var tmp = U256.initZero();
-            var c2: u1 = 0;
-            const s0 = @subWithOverflow(res.limbs[0], m.limbs[0]);
-            tmp.limbs[0] = s0[0];
-            c2 = s0[1];
-
-            const s1 = @subWithOverflow(res.limbs[1], m.limbs[1]);
-            const s1b = @subWithOverflow(s1[0], c2);
-            tmp.limbs[1] = s1b[0];
-            c2 = s1[1] | s1b[1];
-
-            const s2 = @subWithOverflow(res.limbs[2], m.limbs[2]);
-            const s2b = @subWithOverflow(s2[0], c2);
-            tmp.limbs[2] = s2b[0];
-            c2 = s2[1] | s2b[1];
-
-            const s3 = @subWithOverflow(res.limbs[3], m.limbs[3]);
-            const s3b = @subWithOverflow(s3[0], c2);
-            tmp.limbs[3] = s3b[0];
-            c2 = s3[1] | s3b[1];
-
-            // If no carry from addition and subtraction underflowed, use res
-            // Otherwise use tmp (subtraction result)
-            if (c1 == 0 and c2 != 0) {
-                return self.set(res);
-            }
-            return self.set(tmp);
-        }
-
-        // General case
-        if (m.isZero()) {
-            return self.clear();
-        }
-
-        const overflow = self.addOverflow(x, y);
-        if (overflow) {
-            // Sum overflowed 256 bits, need 5-limb division
-            const sum: [5]u64 = [_]u64{ self.limbs[0], self.limbs[1], self.limbs[2], self.limbs[3], 1 };
-            var quot: [5]u64 = [_]u64{0} ** 5;
-            var rem = U256.initZero();
-            division.udivrem(&quot, &sum, &m, &rem);
-            return self.set(rem);
-        }
-
-        return self.mod(self.*, m);
-    }
-
-    /// Adds x to self modulo m, modifying self in place, and returns self.
-    /// Mathematically: self = (self + x) mod m.
-    pub fn iaddMod(self: *U256, x: U256, m: U256) *U256 {
-        const self_copy = self.*;
-        return self.addMod(self_copy, x, m);
-    }
-
-    /// Sets self to x + y, where y is a u64, and returns self.
-    pub fn addU64(self: *U256, x: U256, y: u64) *U256 {
-        var carry: u1 = 0;
-
-        const r0 = @addWithOverflow(x.limbs[0], y);
-        self.limbs[0] = r0[0];
-        carry = r0[1];
-
-        const r1 = @addWithOverflow(x.limbs[1], @as(u64, carry));
-        self.limbs[1] = r1[0];
-        carry = r1[1];
-
-        const r2 = @addWithOverflow(x.limbs[2], @as(u64, carry));
-        self.limbs[2] = r2[0];
-        carry = r2[1];
-
-        const r3 = @addWithOverflow(x.limbs[3], @as(u64, carry));
-        self.limbs[3] = r3[0];
-
-        return self;
-    }
-
-    /// Adds u64 x to self, modifying self in place, and returns self.
-    /// Mathematically: self = self + x.
-    pub fn iaddU64(self: *U256, x: u64) *U256 {
-        const self_copy = self.*;
-        return self.addU64(self_copy, x);
-    }
-
-    /// Sets self to x - y, where y is a u64, and returns self.
-    pub fn subU64(self: *U256, x: U256, y: u64) *U256 {
-        var borrow: u1 = 0;
-
-        const r0 = @subWithOverflow(x.limbs[0], y);
-        self.limbs[0] = r0[0];
-        borrow = r0[1];
-
-        const r1 = @subWithOverflow(x.limbs[1], @as(u64, borrow));
-        self.limbs[1] = r1[0];
-        borrow = r1[1];
-
-        const r2 = @subWithOverflow(x.limbs[2], @as(u64, borrow));
-        self.limbs[2] = r2[0];
-        borrow = r2[1];
-
-        const r3 = @subWithOverflow(x.limbs[3], @as(u64, borrow));
-        self.limbs[3] = r3[0];
-
-        return self;
-    }
-
-    /// Subtracts u64 x from self, modifying self in place, and returns self.
-    /// Mathematically: self = self - x.
-    pub fn isubU64(self: *U256, x: u64) *U256 {
-        const self_copy = self.*;
-        return self.subU64(self_copy, x);
-    }
-
-    /// Writes self to buffer with 0-padding to n bytes (big-endian).
-    /// Buffer must be at least n bytes long.
-    /// Returns a slice of the buffer containing the result.
-    /// Example: z = 1, n = 20 => [0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1]
-    pub fn paddedBytes(self: U256, buffer: []u8, n: usize) ![]u8 {
-        if (buffer.len < n) return error.BufferTooSmall;
-
-        const b = buffer[0..n];
-        @memset(b, 0);
-
-        var i: usize = 0;
-        while (i < 32 and i < n) : (i += 1) {
-            const limb_index = i / 8;
-            const byte_offset = @as(u6, @intCast(8 * (i % 8)));
-            b[n - 1 - i] = @as(u8, @truncate(self.limbs[limb_index] >> byte_offset));
-        }
-
-        return b;
-    }
-
-    /// Sets self to the product x * y and returns self.
-    pub fn mul(self: *U256, x: U256, y: U256) *U256 {
-        var carry0: u64 = 0;
-        var carry1: u64 = 0;
-        var carry2: u64 = 0;
-        var res1: u64 = 0;
-        var res2: u64 = 0;
-
-        const x0 = x.limbs[0];
-        const x1 = x.limbs[1];
-        const x2 = x.limbs[2];
-        const x3 = x.limbs[3];
-        const y0 = y.limbs[0];
-        const y1 = y.limbs[1];
-        const y2 = y.limbs[2];
-        const y3 = y.limbs[3];
-
-        // First row
-        const p0 = @as(u128, x0) * @as(u128, y0);
-        carry0 = @as(u64, @truncate(p0 >> 64));
-        self.limbs[0] = @as(u64, @truncate(p0));
-
-        const r1 = multiplication.umulHop(carry0, x1, y0);
-        carry0 = r1.hi;
-        res1 = r1.lo;
-
-        const r2 = multiplication.umulHop(carry0, x2, y0);
-        carry0 = r2.hi;
-        res2 = r2.lo;
-
-        // Second row
-        const r3 = multiplication.umulHop(res1, x0, y1);
-        carry1 = r3.hi;
-        self.limbs[1] = r3.lo;
-
-        const r4 = multiplication.umulStep(res2, x1, y1, carry1);
-        carry1 = r4.hi;
-        res2 = r4.lo;
-
-        // Third row
-        const r5 = multiplication.umulHop(res2, x0, y2);
-        carry2 = r5.hi;
-        self.limbs[2] = r5.lo;
-
-        // Final limb
-        self.limbs[3] = x3 *% y0 +% x2 *% y1 +% x0 *% y3 +% x1 *% y2 +% carry0 +% carry1 +% carry2;
-
-        return self;
-    }
-
-    /// Multiplies self by x, modifying self in place, and returns self.
-    /// Mathematically: self = self * x.
-    pub fn imul(self: *U256, x: U256) *U256 {
-        const self_copy = self.*;
-        return self.mul(self_copy, x);
-    }
-
-    /// Sets self to the product x * y and returns whether overflow occurred.
-    /// Returns true if the multiplication overflowed (result > 2^256 - 1).
-    pub fn mulOverflow(self: *U256, x: U256, y: U256) bool {
-        var p: [8]u64 = undefined;
-        multiplication.umul(&x.limbs, &y.limbs, &p);
-
-        // Copy lower 4 limbs to self
-        self.limbs[0] = p[0];
-        self.limbs[1] = p[1];
-        self.limbs[2] = p[2];
-        self.limbs[3] = p[3];
-
-        // Check if any of the upper 4 limbs are non-zero
-        return (p[4] | p[5] | p[6] | p[7]) != 0;
-    }
-
     /// Squares self in place and returns self.
     /// Mathematically: self = self * self.
     pub fn squared(self: *U256) *U256 {
@@ -2284,44 +2485,6 @@ pub const U256 = struct {
         self.limbs[3] = res3;
 
         return self;
-    }
-
-    /// Returns true if bit n is set, where n = 0 is LSB.
-    /// The n must be <= 255.
-    pub fn isBitSet(self: U256, n: usize) bool {
-        assert(n <= 255);
-        const limb_index = n / 64;
-        const bit_offset = @as(u6, @intCast(n % 64));
-        return (self.limbs[limb_index] & (@as(u64, 1) << bit_offset)) != 0;
-    }
-
-    /// Sets self to the quotient x / y and returns self.
-    /// If y == 0, self is set to 0.
-    pub fn div(self: *U256, x: U256, y: U256) *U256 {
-        if (y.isZero() or y.gt(x)) {
-            return self.clear();
-        }
-        if (x.eq(y)) {
-            return self.setOne();
-        }
-
-        // Shortcut for small values
-        if (x.isU64()) {
-            return self.setU64(x.getU64() / y.getU64());
-        }
-
-        // At this point: x / y where x > y > 0
-        var quot: [4]u64 = [_]u64{0} ** 4;
-        division.udivrem(&quot, &x.limbs, &y, null);
-        self.limbs = quot;
-        return self;
-    }
-
-    /// Divides self by x, modifying self in place, and returns self.
-    /// Mathematically: self = self / x.
-    pub fn idiv(self: *U256, x: U256) *U256 {
-        const self_copy = self.*;
-        return self.div(self_copy, x);
     }
 
     /// Sets self to ⌊√x⌋, the largest integer such that self² ≤ x, and returns self.
@@ -2389,6 +2552,80 @@ pub const U256 = struct {
     pub fn iSqrt(self: *U256) *U256 {
         const self_copy = self.*;
         return self.sqrt(self_copy);
+    }
+
+    /// Sets self to base^exponent mod 2^256 and returns self.
+    /// Uses the square-and-multiply algorithm (binary exponentiation).
+    ///
+    /// Optimization: If base is even and exponent > 256 (bitLen > 8),
+    /// the result will be 0 due to modular reduction, so we can return early.
+    pub fn exp(self: *U256, base: U256, exponent: U256) *U256 {
+        var res = U256.init(1);
+        var multiplier = base;
+        const exp_bit_len = exponent.bitLen();
+        var cur_bit: usize = 0;
+
+        // Check if base is even
+        const even = (base.limbs[0] & 1) == 0;
+
+        // If base is even and exponent > 256, result is 0
+        if (even and exp_bit_len > 8) {
+            return self.clear();
+        }
+
+        // Process limbs[0] (bits 0-63)
+        var word = exponent.limbs[0];
+        while (cur_bit < exp_bit_len and cur_bit < 64) : (cur_bit += 1) {
+            if ((word & 1) == 1) {
+                _ = res.mul(res, multiplier);
+            }
+            _ = multiplier.squared();
+            word >>= 1;
+        }
+
+        // If base was even, we're done (small exponents)
+        if (even) {
+            return self.set(res);
+        }
+
+        // Process limbs[1] (bits 64-127)
+        word = exponent.limbs[1];
+        while (cur_bit < exp_bit_len and cur_bit < 128) : (cur_bit += 1) {
+            if ((word & 1) == 1) {
+                _ = res.mul(res, multiplier);
+            }
+            _ = multiplier.squared();
+            word >>= 1;
+        }
+
+        // Process limbs[2] (bits 128-191)
+        word = exponent.limbs[2];
+        while (cur_bit < exp_bit_len and cur_bit < 192) : (cur_bit += 1) {
+            if ((word & 1) == 1) {
+                _ = res.mul(res, multiplier);
+            }
+            _ = multiplier.squared();
+            word >>= 1;
+        }
+
+        // Process limbs[3] (bits 192-255)
+        word = exponent.limbs[3];
+        while (cur_bit < exp_bit_len and cur_bit < 256) : (cur_bit += 1) {
+            if ((word & 1) == 1) {
+                _ = res.mul(res, multiplier);
+            }
+            _ = multiplier.squared();
+            word >>= 1;
+        }
+
+        return self.set(res);
+    }
+
+    /// Sets self to self^exponent mod 2^256 and returns self.
+    /// In-place version of exp.
+    pub fn iExp(self: *U256, exponent: U256) *U256 {
+        const self_copy = self.*;
+        return self.exp(self_copy, exponent);
     }
 
     /// Returns the base-10 logarithm of self, floored to the nearest integer.
@@ -3498,374 +3735,142 @@ pub const U256 = struct {
         }
     }
 
-    /// Sets self to base^exponent mod 2^256 and returns self.
-    /// Uses the square-and-multiply algorithm (binary exponentiation).
+    /// Converts a big integer to U256 and sets the value to self.
+    /// Returns true if the value overflows (doesn't fit in 256 bits).
+    /// Handles both positive and negative big integers (negative values are converted using two's complement).
+    pub fn setFromBig(self: *U256, big: std.math.big.int.Const) bool {
+        _ = self.clear();
+
+        const limbs = big.limbs;
+        const positive = big.positive;
+
+        // On 64-bit systems, big.Int limbs are u64 (same as our limbs)
+        // On 32-bit systems, big.Int limbs are u32 (need to combine pairs)
+        const limb_bits = @bitSizeOf(std.math.big.Limb);
+
+        var overflow = false;
+
+        if (limb_bits == 64) {
+            // 64-bit architecture: direct copy
+            const max_limbs = @min(limbs.len, 4);
+            for (0..max_limbs) |i| {
+                self.limbs[i] = limbs[i];
+            }
+            overflow = limbs.len > 4;
+        } else if (limb_bits == 32) {
+            // 32-bit architecture: combine pairs of u32 into u64
+            const max_limbs = @min(limbs.len, 8);
+            overflow = limbs.len > 8;
+
+            var i: usize = 0;
+            while (i < max_limbs) : (i += 1) {
+                const limb_idx = i / 2;
+                if (i % 2 == 0) {
+                    self.limbs[limb_idx] = limbs[i];
+                } else {
+                    // Example:
+                    //   0b00000000_10101011  (current self.limbs[i])
+                    // | 0b11001101_00000000  (@as(u64, limbs[i]) << 32)
+                    // ─────────────────────
+                    //   0b11001101_10101011  (result of the OR operation)
+                    self.limbs[limb_idx] |= @as(u64, limbs[i]) << 32;
+                }
+            }
+        } else {
+            @compileError("Unsupported limb size for big integers");
+        }
+
+        // Handle negative numbers using two's complement
+        if (!positive) {
+            _ = self.neg(self.*);
+        }
+
+        return overflow;
+    }
+
+    /// Convenience constructor from big.Int.
+    /// Returns a new U256 and whether overflow occurred.
     ///
-    /// Optimization: If base is even and exponent > 256 (bitLen > 8),
-    /// the result will be 0 due to modular reduction, so we can return early.
-    pub fn exp(self: *U256, base: U256, exponent: U256) *U256 {
-        var res = U256.init(1);
-        var multiplier = base;
-        const exp_bit_len = exponent.bitLen();
-        var cur_bit: usize = 0;
+    /// Example:
+    /// ```zig
+    /// var big = try std.math.big.int.Managed.init(allocator);
+    /// try big.set(12345);
+    /// const result = U256.fromBig(big.toConst());
+    /// if (result.overflow) {
+    ///     // Handle overflow
+    /// }
+    /// ```
+    pub fn fromBig(big: std.math.big.int.Const) struct { value: U256, overflow: bool } {
+        var z = U256.initZero();
+        const overflow = z.setFromBig(big);
+        return .{ .value = z, .overflow = overflow };
+    }
 
-        // Check if base is even
-        const even = (base.limbs[0] & 1) == 0;
+    /// Convenience constructor from big.Int that panics on overflow.
+    /// Returns a new U256.
+    ///
+    /// Example:
+    /// ```zig
+    /// var big = try std.math.big.int.Managed.init(allocator);
+    /// try big.set(12345);
+    /// const z = U256.mustFromBig(big.toConst());
+    /// ```
+    pub fn mustFromBig(big: std.math.big.int.Const) U256 {
+        var z = U256.initZero();
+        const overflow = z.setFromBig(big);
+        if (overflow) {
+            std.debug.panic("U256.mustFromBig: overflow occurred", .{});
+        }
+        return z;
+    }
 
-        // If base is even and exponent > 256, result is 0
-        if (even and exp_bit_len > 8) {
-            return self.clear();
+    /// Returns the float64 value nearest to self.
+    ///
+    /// Note: The `std.math.big.Float` version would also return an 'Accuracy',
+    /// indicating whether the value was too small or too large to be represented
+    /// by a float64. However, U256 is unable to represent values out of scope
+    /// (|x| < std.math.floatMin(f64) or |x| > std.math.floatMax(f64)),
+    /// therefore this method does not return any accuracy.
+    ///
+    /// The conversion follows IEEE 754 double-precision format:
+    /// - 1 sign bit (always 0 for unsigned)
+    /// - 11 exponent bits
+    /// - 52 fraction bits
+    ///
+    /// Example:
+    /// ```zig
+    /// const z = U256.init(12345);
+    /// const f = z.toFloat64();
+    /// ```
+    pub fn toFloat64(self: U256) f64 {
+        // Fast path for values that fit in u64
+        if (self.isU64()) {
+            return @floatFromInt(self.getU64());
         }
 
-        // Process limbs[0] (bits 0-63)
-        var word = exponent.limbs[0];
-        while (cur_bit < exp_bit_len and cur_bit < 64) : (cur_bit += 1) {
-            if ((word & 1) == 1) {
-                _ = res.mul(res, multiplier);
-            }
-            _ = multiplier.squared();
-            word >>= 1;
-        }
+        // Get the bit length of the number
+        const bitlen = self.bitLen();
 
-        // If base was even, we're done (small exponents)
-        if (even) {
-            return self.set(res);
-        }
+        // Normalize the number by shifting it so that the MSB is shifted out
+        // After normalization, the leading 1 bit is implicit in IEEE 754
+        var y = U256.initZero();
+        const shift_amount: u32 = @intCast(1 + 256 - bitlen);
+        _ = y.lsh(self, shift_amount);
 
-        // Process limbs[1] (bits 64-127)
-        word = exponent.limbs[1];
-        while (cur_bit < exp_bit_len and cur_bit < 128) : (cur_bit += 1) {
-            if ((word & 1) == 1) {
-                _ = res.mul(res, multiplier);
-            }
-            _ = multiplier.squared();
-            word >>= 1;
-        }
+        // The number with the leading 1 shifted out is the fraction
+        // We take the top 52 bits from limbs[3]
+        const fraction = y.limbs[3];
 
-        // Process limbs[2] (bits 128-191)
-        word = exponent.limbs[2];
-        while (cur_bit < exp_bit_len and cur_bit < 192) : (cur_bit += 1) {
-            if ((word & 1) == 1) {
-                _ = res.mul(res, multiplier);
-            }
-            _ = multiplier.squared();
-            word >>= 1;
-        }
+        // The exponent is calculated from the bit length, adjusted with the bias
+        // Double-precision uses 1023 as bias
+        const biased_exp: u64 = 1023 + bitlen - 1;
 
-        // Process limbs[3] (bits 192-255)
-        word = exponent.limbs[3];
-        while (cur_bit < exp_bit_len and cur_bit < 256) : (cur_bit += 1) {
-            if ((word & 1) == 1) {
-                _ = res.mul(res, multiplier);
-            }
-            _ = multiplier.squared();
-            word >>= 1;
-        }
+        // Construct the IEEE 754 double-precision representation:
+        // [sign: 1 bit (0)] [exponent: 11 bits] [fraction: 52 bits]
+        // We shift exponent left by 52 bits and take top 52 bits of fraction
+        const bits = (biased_exp << 52) | (fraction >> 12);
 
-        return self.set(res);
-    }
-
-    /// Sets self to self^exponent mod 2^256 and returns self.
-    /// In-place version of exp.
-    pub fn iExp(self: *U256, exponent: U256) *U256 {
-        const self_copy = self.*;
-        return self.exp(self_copy, exponent);
-    }
-
-    /// Writes all 32 bytes of self to the destination slice, including zero-bytes.
-    /// If dest is larger than 32 bytes, self will fill the first 32 bytes, leaving the rest untouched.
-    /// Returns error.BufferTooSmall if dest is smaller than 32 bytes.
-    pub fn putU256(self: U256, dest: []u8) error{BufferTooSmall}!void {
-        if (dest.len < 32) return error.BufferTooSmall;
-        mem.writeInt(u64, dest[0..8], self.limbs[3], .big);
-        mem.writeInt(u64, dest[8..16], self.limbs[2], .big);
-        mem.writeInt(u64, dest[16..24], self.limbs[1], .big);
-        mem.writeInt(u64, dest[24..32], self.limbs[0], .big);
-    }
-
-    /// Writes all 32 bytes of self to the destination array, including zero-bytes.
-    pub fn writeToArray32(self: U256, dest: *[32]u8) void {
-        mem.writeInt(u64, dest[0..8], self.limbs[3], .big);
-        mem.writeInt(u64, dest[8..16], self.limbs[2], .big);
-        mem.writeInt(u64, dest[16..24], self.limbs[1], .big);
-        mem.writeInt(u64, dest[24..32], self.limbs[0], .big);
-    }
-
-    /// Writes all 20 bytes of self to the destination array, including zero-bytes.
-    pub fn writeToArray20(self: U256, dest: *[20]u8) void {
-        mem.writeInt(u32, dest[0..4], @as(u32, @truncate(self.limbs[2])), .big);
-        mem.writeInt(u64, dest[4..12], self.limbs[1], .big);
-        mem.writeInt(u64, dest[12..20], self.limbs[0], .big);
-    }
-
-    // setBytes functions for each length (1-32 bytes)
-
-    fn setBytes1(self: *U256, buf: []const u8) void {
-        assert(buf.len == 1);
-        self.limbs[0] = buf[0];
-        self.limbs[1] = 0;
-        self.limbs[2] = 0;
-        self.limbs[3] = 0;
-    }
-
-    fn setBytes2(self: *U256, buf: []const u8) void {
-        assert(buf.len == 2);
-        self.limbs[0] = mem.readInt(u16, buf[0..2], .big);
-        self.limbs[1] = 0;
-        self.limbs[2] = 0;
-        self.limbs[3] = 0;
-    }
-
-    fn setBytes3(self: *U256, buf: []const u8) void {
-        assert(buf.len == 3);
-        self.limbs[0] = (@as(u64, buf[0]) << 16) | mem.readInt(u16, buf[1..3], .big);
-        self.limbs[1] = 0;
-        self.limbs[2] = 0;
-        self.limbs[3] = 0;
-    }
-
-    fn setBytes4(self: *U256, buf: []const u8) void {
-        assert(buf.len == 4);
-        self.limbs[0] = mem.readInt(u32, buf[0..4], .big);
-        self.limbs[1] = 0;
-        self.limbs[2] = 0;
-        self.limbs[3] = 0;
-    }
-
-    fn setBytes5(self: *U256, buf: []const u8) void {
-        assert(buf.len == 5);
-        self.limbs[0] = (@as(u64, buf[0]) << 32) | mem.readInt(u32, buf[1..5], .big);
-        self.limbs[1] = 0;
-        self.limbs[2] = 0;
-        self.limbs[3] = 0;
-    }
-
-    fn setBytes6(self: *U256, buf: []const u8) void {
-        assert(buf.len == 6);
-        self.limbs[0] = (@as(u64, mem.readInt(u16, buf[0..2], .big)) << 32) |
-            mem.readInt(u32, buf[2..6], .big);
-        self.limbs[1] = 0;
-        self.limbs[2] = 0;
-        self.limbs[3] = 0;
-    }
-
-    fn setBytes7(self: *U256, buf: []const u8) void {
-        assert(buf.len == 7);
-        self.limbs[0] = (@as(u64, buf[0]) << 48) |
-            (@as(u64, mem.readInt(u16, buf[1..3], .big)) << 32) |
-            mem.readInt(u32, buf[3..7], .big);
-        self.limbs[1] = 0;
-        self.limbs[2] = 0;
-        self.limbs[3] = 0;
-    }
-
-    fn setBytes8(self: *U256, buf: []const u8) void {
-        assert(buf.len == 8);
-        self.limbs[0] = mem.readInt(u64, buf[0..8], .big);
-        self.limbs[1] = 0;
-        self.limbs[2] = 0;
-        self.limbs[3] = 0;
-    }
-
-    fn setBytes9(self: *U256, buf: []const u8) void {
-        assert(buf.len == 9);
-        self.limbs[0] = mem.readInt(u64, buf[1..9], .big);
-        self.limbs[1] = buf[0];
-        self.limbs[2] = 0;
-        self.limbs[3] = 0;
-    }
-
-    fn setBytes10(self: *U256, buf: []const u8) void {
-        assert(buf.len == 10);
-        self.limbs[0] = mem.readInt(u64, buf[2..10], .big);
-        self.limbs[1] = mem.readInt(u16, buf[0..2], .big);
-        self.limbs[2] = 0;
-        self.limbs[3] = 0;
-    }
-
-    fn setBytes11(self: *U256, buf: []const u8) void {
-        assert(buf.len == 11);
-        self.limbs[0] = mem.readInt(u64, buf[3..11], .big);
-        self.limbs[1] = (@as(u64, buf[0]) << 16) | mem.readInt(u16, buf[1..3], .big);
-        self.limbs[2] = 0;
-        self.limbs[3] = 0;
-    }
-
-    fn setBytes12(self: *U256, buf: []const u8) void {
-        assert(buf.len == 12);
-        self.limbs[0] = mem.readInt(u64, buf[4..12], .big);
-        self.limbs[1] = mem.readInt(u32, buf[0..4], .big);
-        self.limbs[2] = 0;
-        self.limbs[3] = 0;
-    }
-
-    fn setBytes13(self: *U256, buf: []const u8) void {
-        assert(buf.len == 13);
-        self.limbs[0] = mem.readInt(u64, buf[5..13], .big);
-        self.limbs[1] = (@as(u64, buf[0]) << 32) | mem.readInt(u32, buf[1..5], .big);
-        self.limbs[2] = 0;
-        self.limbs[3] = 0;
-    }
-
-    fn setBytes14(self: *U256, buf: []const u8) void {
-        assert(buf.len == 14);
-        self.limbs[0] = mem.readInt(u64, buf[6..14], .big);
-        self.limbs[1] = (@as(u64, mem.readInt(u16, buf[0..2], .big)) << 32) |
-            mem.readInt(u32, buf[2..6], .big);
-        self.limbs[2] = 0;
-        self.limbs[3] = 0;
-    }
-
-    fn setBytes15(self: *U256, buf: []const u8) void {
-        assert(buf.len == 15);
-        self.limbs[0] = mem.readInt(u64, buf[7..15], .big);
-        self.limbs[1] = (@as(u64, buf[0]) << 48) |
-            (@as(u64, mem.readInt(u16, buf[1..3], .big)) << 32) |
-            mem.readInt(u32, buf[3..7], .big);
-        self.limbs[2] = 0;
-        self.limbs[3] = 0;
-    }
-
-    fn setBytes16(self: *U256, buf: []const u8) void {
-        assert(buf.len == 16);
-        self.limbs[0] = mem.readInt(u64, buf[8..16], .big);
-        self.limbs[1] = mem.readInt(u64, buf[0..8], .big);
-        self.limbs[2] = 0;
-        self.limbs[3] = 0;
-    }
-
-    fn setBytes17(self: *U256, buf: []const u8) void {
-        assert(buf.len == 17);
-        self.limbs[0] = mem.readInt(u64, buf[9..17], .big);
-        self.limbs[1] = mem.readInt(u64, buf[1..9], .big);
-        self.limbs[2] = buf[0];
-        self.limbs[3] = 0;
-    }
-
-    fn setBytes18(self: *U256, buf: []const u8) void {
-        assert(buf.len == 18);
-        self.limbs[0] = mem.readInt(u64, buf[10..18], .big);
-        self.limbs[1] = mem.readInt(u64, buf[2..10], .big);
-        self.limbs[2] = mem.readInt(u16, buf[0..2], .big);
-        self.limbs[3] = 0;
-    }
-
-    fn setBytes19(self: *U256, buf: []const u8) void {
-        assert(buf.len == 19);
-        self.limbs[0] = mem.readInt(u64, buf[11..19], .big);
-        self.limbs[1] = mem.readInt(u64, buf[3..11], .big);
-        self.limbs[2] = (@as(u64, buf[0]) << 16) | mem.readInt(u16, buf[1..3], .big);
-        self.limbs[3] = 0;
-    }
-
-    fn setBytes20(self: *U256, buf: []const u8) void {
-        assert(buf.len == 20);
-        self.limbs[0] = mem.readInt(u64, buf[12..20], .big);
-        self.limbs[1] = mem.readInt(u64, buf[4..12], .big);
-        self.limbs[2] = mem.readInt(u32, buf[0..4], .big);
-        self.limbs[3] = 0;
-    }
-
-    fn setBytes21(self: *U256, buf: []const u8) void {
-        assert(buf.len == 21);
-        self.limbs[0] = mem.readInt(u64, buf[13..21], .big);
-        self.limbs[1] = mem.readInt(u64, buf[5..13], .big);
-        self.limbs[2] = (@as(u64, buf[0]) << 32) | mem.readInt(u32, buf[1..5], .big);
-        self.limbs[3] = 0;
-    }
-
-    fn setBytes22(self: *U256, buf: []const u8) void {
-        assert(buf.len == 22);
-        self.limbs[0] = mem.readInt(u64, buf[14..22], .big);
-        self.limbs[1] = mem.readInt(u64, buf[6..14], .big);
-        self.limbs[2] = (@as(u64, mem.readInt(u16, buf[0..2], .big)) << 32) |
-            mem.readInt(u32, buf[2..6], .big);
-        self.limbs[3] = 0;
-    }
-
-    fn setBytes23(self: *U256, buf: []const u8) void {
-        assert(buf.len == 23);
-        self.limbs[0] = mem.readInt(u64, buf[15..23], .big);
-        self.limbs[1] = mem.readInt(u64, buf[7..15], .big);
-        self.limbs[2] = (@as(u64, buf[0]) << 48) |
-            (@as(u64, mem.readInt(u16, buf[1..3], .big)) << 32) |
-            mem.readInt(u32, buf[3..7], .big);
-        self.limbs[3] = 0;
-    }
-
-    fn setBytes24(self: *U256, buf: []const u8) void {
-        assert(buf.len == 24);
-        self.limbs[0] = mem.readInt(u64, buf[16..24], .big);
-        self.limbs[1] = mem.readInt(u64, buf[8..16], .big);
-        self.limbs[2] = mem.readInt(u64, buf[0..8], .big);
-        self.limbs[3] = 0;
-    }
-
-    fn setBytes25(self: *U256, buf: []const u8) void {
-        assert(buf.len == 25);
-        self.limbs[0] = mem.readInt(u64, buf[17..25], .big);
-        self.limbs[1] = mem.readInt(u64, buf[9..17], .big);
-        self.limbs[2] = mem.readInt(u64, buf[1..9], .big);
-        self.limbs[3] = buf[0];
-    }
-
-    fn setBytes26(self: *U256, buf: []const u8) void {
-        assert(buf.len == 26);
-        self.limbs[0] = mem.readInt(u64, buf[18..26], .big);
-        self.limbs[1] = mem.readInt(u64, buf[10..18], .big);
-        self.limbs[2] = mem.readInt(u64, buf[2..10], .big);
-        self.limbs[3] = mem.readInt(u16, buf[0..2], .big);
-    }
-
-    fn setBytes27(self: *U256, buf: []const u8) void {
-        assert(buf.len == 27);
-        self.limbs[0] = mem.readInt(u64, buf[19..27], .big);
-        self.limbs[1] = mem.readInt(u64, buf[11..19], .big);
-        self.limbs[2] = mem.readInt(u64, buf[3..11], .big);
-        self.limbs[3] = (@as(u64, buf[0]) << 16) | mem.readInt(u16, buf[1..3], .big);
-    }
-
-    fn setBytes28(self: *U256, buf: []const u8) void {
-        assert(buf.len == 28);
-        self.limbs[0] = mem.readInt(u64, buf[20..28], .big);
-        self.limbs[1] = mem.readInt(u64, buf[12..20], .big);
-        self.limbs[2] = mem.readInt(u64, buf[4..12], .big);
-        self.limbs[3] = mem.readInt(u32, buf[0..4], .big);
-    }
-
-    fn setBytes29(self: *U256, buf: []const u8) void {
-        assert(buf.len == 29);
-        self.limbs[0] = mem.readInt(u64, buf[21..29], .big);
-        self.limbs[1] = mem.readInt(u64, buf[13..21], .big);
-        self.limbs[2] = mem.readInt(u64, buf[5..13], .big);
-        self.limbs[3] = (@as(u64, buf[0]) << 32) | mem.readInt(u32, buf[1..5], .big);
-    }
-
-    fn setBytes30(self: *U256, buf: []const u8) void {
-        assert(buf.len == 30);
-        self.limbs[0] = mem.readInt(u64, buf[22..30], .big);
-        self.limbs[1] = mem.readInt(u64, buf[14..22], .big);
-        self.limbs[2] = mem.readInt(u64, buf[6..14], .big);
-        self.limbs[3] = (@as(u64, mem.readInt(u16, buf[0..2], .big)) << 32) |
-            mem.readInt(u32, buf[2..6], .big);
-    }
-
-    fn setBytes31(self: *U256, buf: []const u8) void {
-        assert(buf.len == 31);
-        self.limbs[0] = mem.readInt(u64, buf[23..31], .big);
-        self.limbs[1] = mem.readInt(u64, buf[15..23], .big);
-        self.limbs[2] = mem.readInt(u64, buf[7..15], .big);
-        self.limbs[3] = (@as(u64, buf[0]) << 48) |
-            (@as(u64, mem.readInt(u16, buf[1..3], .big)) << 32) |
-            mem.readInt(u32, buf[3..7], .big);
-    }
-
-    fn setBytes32(self: *U256, buf: []const u8) void {
-        assert(buf.len == 32);
-        self.limbs[0] = mem.readInt(u64, buf[24..32], .big);
-        self.limbs[1] = mem.readInt(u64, buf[16..24], .big);
-        self.limbs[2] = mem.readInt(u64, buf[8..16], .big);
-        self.limbs[3] = mem.readInt(u64, buf[0..8], .big);
+        return @bitCast(bits);
     }
 };
 
