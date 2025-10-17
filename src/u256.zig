@@ -122,9 +122,8 @@ pub const U256 = struct {
     /// Example: If self = 0x123456789ABCDEF0... and n=7,
     /// returns the byte at position 7 from the left (big-endian).
     pub fn byte(self: *U256, n: U256) *U256 {
-        // Get n as u64, check for overflow
+        // Check for overflow
         if (!n.isU64()) {
-            // n is too large (>= 2^64), definitely >= 32
             return self.clear();
         }
 
@@ -133,9 +132,14 @@ pub const U256 = struct {
             return self.clear();
         }
 
-        // Convert big-endian index to limb index
+        // Convert big-endian index to limb index (little-endian)
         // Big-endian: index 0 = MSB of limbs[3], index 31 = LSB of limbs[0]
         // limbs[3] contains bytes 0-7, limbs[2] contains bytes 8-15, etc.
+        // Example:
+        // index 0-7   → index / 8 = 0 → limb_index = 3 - 0 = 3
+        // index 8-15  → index / 8 = 1 → limb_index = 3 - 1 = 2
+        // index 16-23 → index / 8 = 2 → limb_index = 3 - 2 = 1
+        // index 24-31 → index / 8 = 3 → limb_index = 3 - 3 = 0
         const limb_index = 3 - (index / 8);
         const byte_in_limb = index % 8;
 
@@ -143,9 +147,10 @@ pub const U256 = struct {
         // In a u64, the MSB is at the highest position (shift right by 56)
         // byte_in_limb=0 means MSB (shift by 56), byte_in_limb=7 means LSB (shift by 0)
         const shift: u6 = @intCast(56 - (byte_in_limb * 8));
+        // 0xFF is a mask
+        // Example: 0x0000000000001122 & 0xFF = 0x22
         const byte_value = (self.limbs[limb_index] >> shift) & 0xFF;
 
-        // Set self to the extracted byte value
         self.limbs[0] = byte_value;
         self.limbs[1] = 0;
         self.limbs[2] = 0;
@@ -204,6 +209,8 @@ pub const U256 = struct {
         if (self.isZero()) {
             return 0;
         }
+        // 0x8000000000000000 = 1000 0000 0000 0000 0000 0000 0000 0000
+        // First bit is 1 (negative sign)
         if (self.limbs[3] < 0x8000000000000000) {
             return 1;
         }
@@ -226,8 +233,14 @@ pub const U256 = struct {
         const e = byte_num.getU64();
         _ = self.set(x);
 
+        // which limb?
+        // 28 = 0001 1100
+        // 28 >> 3 = 0000 0011 = (3)
         const sign_word_index = e >> 3; // Index of the word with the sign bit (0-3)
-        const sign_byte_index = e & 7;  // Index of the sign byte in the sign word (0-7)
+        // which byte within that limb?
+        // 28 = 0001 1100
+        // 28 & 7 = 0001 1100 & 0000 0111 = 00000100 = (4)
+        const sign_byte_index = e & 7; // Index of the sign byte in the sign word (0-7)
         const sign_word = self.limbs[sign_word_index];
         const sign_byte_offset: u6 = @intCast(sign_byte_index << 3); // Bit offset (0, 8, 16, ..., 56)
         const sign_byte = sign_word >> sign_byte_offset; // Move sign byte to position 0
@@ -681,6 +694,17 @@ pub const U256 = struct {
         return b;
     }
 
+    /// bytes20 returns the value of self as a 20-byte big-endian array.
+    pub fn bytes20(self: U256) [20]u8 {
+        var b: [20]u8 = undefined;
+
+        mem.writeInt(u32, b[0..4], @truncate(self.limbs[2]), .big);
+        mem.writeInt(u64, b[4..12], self.limbs[1], .big);
+        mem.writeInt(u64, b[12..20], self.limbs[0], .big);
+
+        return b;
+    }
+
     /// Returns the number of bits required to represent self.
     pub fn bitLen(self: U256) usize {
         if (self.limbs[3] != 0) {
@@ -882,7 +906,7 @@ pub const U256 = struct {
             return self.setU64(x.getU64() % y.getU64());
         }
 
-        var quot: [4]u64 = [_]u64{0, 0, 0, 0};
+        var quot: [4]u64 = [_]u64{ 0, 0, 0, 0 };
         var rem = U256.initZero();
         // Example: value = 100 × 2^0   +  200 × 2^64   +  0 × 2^128   +  0 × 2^192
         division.udivrem(&quot, &x.limbs, &y, &rem);
@@ -4208,6 +4232,81 @@ test "U256 bytes32 - small value" {
     try std.testing.expectEqual(@as(u8, 0x42), result[31]);
 }
 
+test "U256 bytes20 - round trip" {
+    const original = [_]u8{
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+        0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10,
+        0x11, 0x12, 0x13, 0x14,
+    };
+    var z = U256.initZero();
+    _ = z.setBytes(&original);
+    const result = z.bytes20();
+    try std.testing.expectEqualSlices(u8, &original, &result);
+}
+
+test "U256 bytes20 - small value" {
+    const z = U256.init(0x42);
+    const result = z.bytes20();
+    try std.testing.expectEqual(@as(u8, 0), result[0]);
+    try std.testing.expectEqual(@as(u8, 0x42), result[19]);
+}
+
+test "U256 bytes20 - specific limbs" {
+    var z = U256.initZero();
+    z.limbs[0] = 0x1122334455667788; // Bytes 7-0
+    z.limbs[1] = 0x99AABBCCDDEEFF00; // Bytes 15-8
+    z.limbs[2] = 0x0000000011223344; // Bytes 23-16 (only lower 32 bits matter)
+    z.limbs[3] = 0xFFFFFFFFFFFFFFFF; // Not used in bytes20
+
+    const result = z.bytes20();
+
+    // Bytes [0..4) should contain lower 32 bits of limbs[2] in big-endian
+    try std.testing.expectEqual(@as(u8, 0x11), result[0]);
+    try std.testing.expectEqual(@as(u8, 0x22), result[1]);
+    try std.testing.expectEqual(@as(u8, 0x33), result[2]);
+    try std.testing.expectEqual(@as(u8, 0x44), result[3]);
+
+    // Bytes [4..12) should contain limbs[1] in big-endian
+    try std.testing.expectEqual(@as(u8, 0x99), result[4]);
+    try std.testing.expectEqual(@as(u8, 0xAA), result[5]);
+    try std.testing.expectEqual(@as(u8, 0xBB), result[6]);
+    try std.testing.expectEqual(@as(u8, 0xCC), result[7]);
+    try std.testing.expectEqual(@as(u8, 0xDD), result[8]);
+    try std.testing.expectEqual(@as(u8, 0xEE), result[9]);
+    try std.testing.expectEqual(@as(u8, 0xFF), result[10]);
+    try std.testing.expectEqual(@as(u8, 0x00), result[11]);
+
+    // Bytes [12..20) should contain limbs[0] in big-endian
+    try std.testing.expectEqual(@as(u8, 0x11), result[12]);
+    try std.testing.expectEqual(@as(u8, 0x22), result[13]);
+    try std.testing.expectEqual(@as(u8, 0x33), result[14]);
+    try std.testing.expectEqual(@as(u8, 0x44), result[15]);
+    try std.testing.expectEqual(@as(u8, 0x55), result[16]);
+    try std.testing.expectEqual(@as(u8, 0x66), result[17]);
+    try std.testing.expectEqual(@as(u8, 0x77), result[18]);
+    try std.testing.expectEqual(@as(u8, 0x88), result[19]);
+}
+
+test "U256 bytes20 - all zeros" {
+    const z = U256.initZero();
+    const result = z.bytes20();
+    for (result) |byte| {
+        try std.testing.expectEqual(@as(u8, 0), byte);
+    }
+}
+
+test "U256 bytes20 - all ones in lower 160 bits" {
+    var z = U256.initZero();
+    z.limbs[0] = 0xFFFFFFFFFFFFFFFF;
+    z.limbs[1] = 0xFFFFFFFFFFFFFFFF;
+    z.limbs[2] = 0x00000000FFFFFFFF; // Only lower 32 bits
+
+    const result = z.bytes20();
+    for (result) |byte| {
+        try std.testing.expectEqual(@as(u8, 0xFF), byte);
+    }
+}
+
 test "U256 writeBytes - sufficient buffer" {
     const z = U256.init(0x1234);
     var buf: [32]u8 = undefined;
@@ -5076,7 +5175,7 @@ test "U256 sDiv - neg / neg" {
     var n = U256.initZero();
     var d = U256.initZero();
     _ = n.neg(U256.init(100)); // n = -100
-    _ = d.neg(U256.init(10));  // d = -10
+    _ = d.neg(U256.init(10)); // d = -10
 
     _ = z.sDiv(n, d);
     // -100 / -10 = 10
@@ -7980,7 +8079,7 @@ test "U256 unmarshalSSZ - zero" {
 
 test "U256 unmarshalSSZ - simple value" {
     var z = U256.initZero();
-    const buf = [_]u8{0xff, 0, 0, 0, 0, 0, 0, 0} ++ [_]u8{0} ** 24;
+    const buf = [_]u8{ 0xff, 0, 0, 0, 0, 0, 0, 0 } ++ [_]u8{0} ** 24;
     try z.unmarshalSSZ(&buf);
 
     try std.testing.expectEqual(@as(u64, 255), z.limbs[0]);
@@ -8038,7 +8137,7 @@ test "U256 unmarshalSSZ - empty buffer" {
 }
 
 test "U256 fromSSZ - simple value" {
-    const buf = [_]u8{0xff, 0, 0, 0, 0, 0, 0, 0} ++ [_]u8{0} ** 24;
+    const buf = [_]u8{ 0xff, 0, 0, 0, 0, 0, 0, 0 } ++ [_]u8{0} ** 24;
     const z = try U256.fromSSZ(&buf);
 
     try std.testing.expectEqual(@as(u64, 255), z.limbs[0]);
@@ -8082,7 +8181,7 @@ test "U256 hashTreeRoot - simple value" {
     const hash = z.hashTreeRoot();
 
     // For U256, hash tree root is just the SSZ encoding
-    const expected = [_]u8{0xff, 0, 0, 0, 0, 0, 0, 0} ++ [_]u8{0} ** 24;
+    const expected = [_]u8{ 0xff, 0, 0, 0, 0, 0, 0, 0 } ++ [_]u8{0} ** 24;
     try std.testing.expectEqualSlices(u8, &expected, &hash);
 }
 
